@@ -1,0 +1,8 @@
+{
+  "name": "@cards-wilds/bigint-buffer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bounded native-addon-free bigint-buffer compatibility for Solana SDK layouts",
+  "main": "index.cjs",
+  "types": "index.d.ts"
+}

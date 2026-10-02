@@ -1,0 +1,27 @@
+services:
+  game:
+    build: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      GAME_HOST: 0.0.0.0
+      GAME_PORT: 8787
+      GAME_DATA_DIR: /app/.data
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - game-data:/app/.data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  game-data:

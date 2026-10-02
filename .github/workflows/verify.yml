@@ -1,0 +1,83 @@
+name: Verify Lootmon and Dokploy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: lootmon-ci
+      APP_ORIGIN: http://127.0.0.1:8788
+      POSTGRES_PASSWORD: disposableCIpasswordOnly493873092
+      MAINNET_ENABLED: "false"
+      MEMECOIN_MINT: ""
+      X_ACCOUNT_URL: ""
+      SOLANA_RPC_URL: ""
+      TREASURY_PRIVATE_KEY: ""
+      JUPITER_API_KEY: ""
+      COLLECTOR_CRYPT_PAYMENT_WALLET: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Test server and actual camera controls
+        run: npm test
+      - name: Check shared collision data
+        run: node scripts/generate-world-colliders.mjs --check
+      - name: Build the client
+        run: npm run build
+      - name: Start the isolated Dokploy stack
+        run: |
+          docker network create dokploy-network
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml config --quiet
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml up --build --detach --wait --wait-timeout 180
+      - name: Check PostgreSQL and Nginx configuration
+        run: |
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml exec -T postgres psql -U lootmon -d lootmon -c 'SELECT 1'
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml exec -T gateway nginx -t
+      - name: Check provider recovery against real PostgreSQL with offline chain fixtures
+        env:
+          LOOTMON_TEST_DATABASE_URL: postgres://lootmon:disposableCIpasswordOnly493873092@127.0.0.1:55432/lootmon_test
+        run: |
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml exec -T postgres createdb -U lootmon lootmon_test
+          node --test tests/provider-postgres.test.mjs
+      - name: Smoke public routes and protected WebSocket through Nginx
+        run: node scripts/smoke-dokploy.mjs http://127.0.0.1:8788
+      - name: Verify single authority and abrupt-restart recovery
+        shell: bash
+        run: |
+          # All commands target this job's disposable project and empty ledger.
+          # A second authority sharing its volume must fail before Node starts.
+          set +e
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml run --rm --no-deps game
+          duplicate_exit=$?
+          set -e
+          test "$duplicate_exit" -eq 75
+          # SIGKILL must leave PID metadata behind while the kernel frees flock.
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml kill --signal SIGKILL game
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml run --rm --no-deps game sh -c 'test -s /app/.data/authority.lock'
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml up --detach --wait --wait-timeout 120 game
+          node scripts/smoke-dokploy.mjs http://127.0.0.1:8788
+      - name: Show stack logs on failure
+        if: failure()
+        run: docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml logs --no-color --tail 120
+      - name: Remove disposable stack and volumes
+        if: always()
+        run: |
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml down --volumes --remove-orphans
+          docker network rm dokploy-network || true

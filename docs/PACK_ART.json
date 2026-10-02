@@ -1,0 +1,31 @@
+{
+  "tool": "Built-in image_gen",
+  "note": "Illustrated tier packaging, not a photograph or guarantee of provider contents.",
+  "assets": [
+    {
+      "tier": 25,
+      "path": "public/art/pack-25.webp",
+      "prompt": "Use case: product-mockup. Asset type: premium collectible booster pack image used as a small tile in a 3D Pokemon card-hunting game. Create ONE isolated unopened foil trading-card booster pack, upright portrait shape, straight front view with just a tiny 5-degree tilt, exactly centered and fully visible with clean transparent margins. Genuine transparent background. Tall rectangular foil packaging with crimped sealed top and bottom edges, subtle dimensional folds, glossy metallic foil highlights. The front of the pack has beautiful detailed anime game illustration of Bulbasaur among lush jungle leaves. Palette: emerald green and luminous lime. Premium tactile embossed metallic print, high-quality official-game-style character illustration. Small clean word CARDS across the top and small SCOUT at the bottom, no other text, no price, no extra objects. Pack occupies 82 percent image height and about 52 percent width in square composition. Studio product lighting, sharp edges, excellent detailed rendering, a sophisticated collectible pack, NOT a flat icon, not a UI screenshot, no scene behind it, no floor, no cast shadow outside pack."
+    },
+    {
+      "tier": 50,
+      "path": "public/art/pack-50.webp",
+      "prompt": "Use case: product-mockup. One isolated unopened fantasy collectible card foil booster pack on a genuinely transparent background. Upright tall rectangular packaging centered fully visible, straight front view with slight five degree tilt, crimped sealed foil edges top and bottom. Palette turquoise teal and silver. Beautiful detailed painted fantasy creature illustration of an original small sea dragon with pearlescent scales and coral horns, leaping through a spectacular curling wave across the front. Premium embossed metallic print, realistic foil folds and glossy reflections, exquisite video game inventory item art. Small typography CARDS at the top and EXPLORER at bottom. No other text. Square image with transparent side margins, pack occupies 90 percent height, 52 percent width. Single object only, no scene, no floor, no shadows outside packaging. Original creature design."
+    },
+    {
+      "tier": 100,
+      "path": "public/art/pack-100.webp",
+      "prompt": "Use case: product-mockup. One isolated unopened fantasy collectible card foil booster pack on a genuinely transparent background. Upright tall rectangular packaging centered fully visible, straight front view with slight five degree tilt, crimped sealed foil edges top and bottom. Palette sapphire blue and electric gold. Beautiful detailed painted fantasy creature illustration of an original majestic lynx with luminous blue lightning fur and golden eyes among storm clouds across the front. Premium embossed metallic print, realistic foil folds and glossy reflections, exquisite video game inventory item art. Small typography CARDS at the top and RARE at bottom. No other text. Square image with transparent side margins, pack occupies 90 percent height, 52 percent width. Single object only, no scene, no floor, no shadows outside packaging. Original creature design."
+    },
+    {
+      "tier": 250,
+      "path": "public/art/pack-250.webp",
+      "prompt": "Use case: product-mockup. One isolated unopened fantasy collectible card foil booster pack on a genuinely transparent background. Upright tall rectangular packaging centered fully visible, straight front view with slight five degree tilt, crimped sealed foil edges top and bottom. Palette deep violet purple and iridescent lavender. Beautiful detailed painted fantasy creature illustration of an original mysterious moon owl with bright eyes and sweeping spectral wings surrounded by stars and purple mist across the front. Premium embossed metallic print, realistic foil folds and glossy reflections, exquisite video game inventory item art. Small typography CARDS at the top and EPIC at bottom. No other text. Square image with transparent side margins, pack occupies 90 percent height, 52 percent width. Single object only, no scene, no floor, no shadows outside packaging. Original creature design."
+    },
+    {
+      "tier": 500,
+      "path": "public/art/pack-500.webp",
+      "prompt": "Use case: product-mockup. One isolated unopened fantasy collectible card foil booster pack on a genuinely transparent background. Upright tall rectangular packaging centered fully visible, straight front view with slight five degree tilt, crimped sealed foil edges top and bottom. Palette molten gold, black obsidian and warm orange. Beautiful detailed painted fantasy creature illustration of an original powerful golden dragon with enormous wings, radiant scales and a halo of fire across the front. Premium embossed metallic print, realistic foil folds and glossy reflections, exquisite video game inventory item art. Small typography CARDS at the top and GRAIL at bottom. No other text. Square image with transparent side margins, pack occupies 90 percent height, 52 percent width. Single object only, no scene, no floor, no shadows outside packaging. Original creature design."
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "name": "lootmon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:client": "vite --host 127.0.0.1 --configLoader runner",
+    "dev:server": "node --env-file-if-exists=.env server/index.mjs",
+    "build": "tsc --noEmit && vite build --configLoader runner",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test tests/*.test.mjs",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "preflight": "node --env-file-if-exists=.env scripts/preflight.mjs"
+  },
+  "dependencies": {
+    "@metaplex-foundation/mpl-core": "^1.10.0",
+    "@metaplex-foundation/mpl-token-metadata": "^3.4.0",
+    "@metaplex-foundation/umi": "^1.6.0",
+    "@metaplex-foundation/umi-bundle-defaults": "^1.6.0",
+    "@pump-fun/pump-sdk": "^2.0.0",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.99.0",
+    "bigint-buffer": "file:vendor/bigint-buffer",
+    "bs58": "^6.0.0",
+    "lucide": "^0.468.0",
+    "pg": "^8.23.0",
+    "three": "^0.180.0",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.3"
+  },
+  "overrides": {
+    "@solana/web3.js": {
+      "jayson": "5.0.0"
+    },
+    "@coral-xyz/anchor": {
+      "toml": "4.2.0"
+    },
+    "bigint-buffer": "$bigint-buffer"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "@types/three": "^0.180.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.1"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

@@ -1,0 +1,11 @@
+# Isolated GitHub-hosted runner only. Production Compose publishes no ports.
+services:
+  gateway:
+    ports:
+      - "127.0.0.1:8788:80"
+  game:
+    # The crash test restarts explicitly so it can inspect the stale lock.
+    restart: "no"
+  postgres:
+    ports:
+      - "127.0.0.1:55432:5432"

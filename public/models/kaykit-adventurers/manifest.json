@@ -1,0 +1,228 @@
+{
+  "source": "https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0",
+  "revision": "672074b73ba276876a19e8816ecdc5241817ab47",
+  "license": "CC0-1.0",
+  "models": [
+    {
+      "file": "Rogue.glb",
+      "bytes": 743664,
+      "sha256": "9929605e20daf0b3bbd827b493b7f73836138bd835289fab848088fb0c73a5e9",
+      "removedMeshes": [
+        "Knife_Offhand",
+        "1H_Crossbow",
+        "2H_Crossbow",
+        "Knife",
+        "Throwable"
+      ],
+      "clips": [
+        {
+          "name": "Cheer",
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Idle",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.0666666666666667
+        }
+      ],
+      "root": {
+        "children": [
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          46
+        ],
+        "name": "Rig"
+      }
+    },
+    {
+      "file": "Rogue_Hooded.glb",
+      "bytes": 725236,
+      "sha256": "f7727b61f19434f9bee59adb43743552a1f3a1f6f5abb7070000633082d1e667",
+      "removedMeshes": [
+        "Knife_Offhand",
+        "1H_Crossbow",
+        "2H_Crossbow",
+        "Knife",
+        "Throwable"
+      ],
+      "clips": [
+        {
+          "name": "Cheer",
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Idle",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.0666666666666667
+        }
+      ],
+      "root": {
+        "children": [
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          46
+        ],
+        "name": "Rig"
+      }
+    },
+    {
+      "file": "Mage.glb",
+      "bytes": 749360,
+      "sha256": "699a5708bcf1941f23dc6e46701ddd932047cba2e2ca50d59a98a18907a6e56d",
+      "removedMeshes": [
+        "Spellbook",
+        "Spellbook_open",
+        "1H_Wand",
+        "2H_Staff"
+      ],
+      "clips": [
+        {
+          "name": "Cheer",
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Idle",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.0666666666666667
+        }
+      ],
+      "root": {
+        "children": [
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          46
+        ],
+        "name": "Rig"
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+deploy/dokploy.env
+outputs/
+.npm-cache/
+.data/
+*.log
