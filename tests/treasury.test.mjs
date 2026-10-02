@@ -10,19 +10,19 @@ const snapshot = (overrides = {}) => ({
 });
 const total = plan => plan.packs.reduce((sum, pack) => sum + pack.tierUsd * pack.quantity, 0);
 
-test('funded snapshot respects obligations, reserve, and realized fee budget', () => {
+test('funded snapshot spends confirmed balance while protecting existing obligations', () => {
   const plan = planDrop(snapshot());
   assert.equal(plan.eligible, true);
-  assert.equal(plan.cadenceMinutes, 10);
+  assert.equal(plan.cadenceMinutes, 0.25);
   assert.equal(plan.metrics.liquidUsd, 1365);
-  assert.equal(plan.budgetUsd, 88.2);
-  assert.equal(plan.spendUsd, 75);
+  assert.equal(plan.budgetUsd, 1000);
+  assert.equal(plan.spendUsd, 250);
   assert.equal(total(plan), plan.spendUsd);
   assert.ok(plan.metrics.projectedRemainingUsd >= 1475);
 });
 
-test('stops spending when obligations consume liquidity, fees are absent, or daily cap is exhausted', () => {
-  for (const overrides of [{ obligationsUsd: 3000 }, { recentFeesUsd: 0 }, { dailyRemainingUsd: 0 }, { maxCycleUsd: 24.99 }]) {
+test('stops spending when obligations consume liquidity or a spending cap is exhausted', () => {
+  for (const overrides of [{ obligationsUsd: 3000 }, { dailyRemainingUsd: 0 }, { maxCycleUsd: 24.99 }]) {
     const plan = planDrop(snapshot(overrides));
     assert.equal(plan.eligible, false);
     assert.equal(plan.spendUsd, 0);
@@ -30,19 +30,21 @@ test('stops spending when obligations consume liquidity, fees are absent, or dai
   }
 });
 
-test('slow fee inflow uses hourly cadence and accumulated realized fees can fund a later drop', () => {
-  assert.equal(planDrop(snapshot({ recentFeesUsd: 10, feeWindowMinutes: 60 })).eligible, false);
-  const plan = planDrop(snapshot({ recentFeesUsd: 10, feeWindowMinutes: 60, accruedFeesUsd: 50 }));
-  assert.equal(plan.cadenceMinutes, 60);
+test('a direct $25 treasury balance funds a real pack without historical fees or a cash reserve', () => {
+  const plan = planDrop({ treasuryUsd: 25, recentFeesUsd: 0, nowMs: NOW });
   assert.equal(plan.spendUsd, 25);
+  assert.equal(plan.packs[0].tierUsd, 25);
+  assert.equal(planDrop({ treasuryUsd: 24.99, recentFeesUsd: 0, nowMs: NOW }).eligible, false);
 });
 
-test('the due timestamp gates allocation and becomes eligible at the exact boundary', () => {
-  const waiting = planDrop(snapshot({ lastDropAtMs: NOW - 599_999 }));
-  assert.equal(waiting.reason, 'cadence');
-  assert.equal(waiting.nextDropAtMs, NOW + 1);
-  assert.equal(waiting.spendUsd, 0);
-  assert.equal(planDrop(snapshot({ lastDropAtMs: NOW - 600_000 })).eligible, true);
+test('five outstanding packs stop purchases; securing one permits exactly one replacement without an hourly delay', () => {
+  const input = snapshot({ outstandingPacks: 5, lastDropAtMs: NOW });
+  assert.equal(planDrop(input).reason, 'world_full');
+  const refill = planDrop({ ...input, outstandingPacks: 4 });
+  assert.equal(refill.eligible, true);
+  assert.equal(refill.packs.reduce((n, p) => n + p.quantity, 0), 1);
+  assert.equal(refill.nextDropAtMs, NOW + 15_000);
+  assert.equal(planDrop({ ...input, outstandingPacks: 9 }).spendUsd, 0);
 });
 
 test('premium packs require treasury depth, healthy current flow, and cooldowns across premium tiers', () => {
@@ -78,7 +80,7 @@ test('rejects invalid values instead of treating corrupt provider data as spenda
   for (const overrides of [
     { treasuryUsd: NaN }, { recentFeesUsd: Infinity }, { obligationsUsd: -1 },
     { treasuryUsd: '10000' }, { nowMs: undefined }, { feeWindowMinutes: 0 },
-    { cadenceMinutes: 30 }, { maxPacks: 0 }, { availableTiers: [75] },
+    { outstandingPacks: -1 }, { outstandingPacks: 1.5 }, { maxPacks: 0 }, { availableTiers: [75] },
     { lastDropAtMs: NOW + 1 }, { lastHighTierAtMs: { 500: NOW + 1 } },
   ]) assert.throws(() => planDrop(snapshot(overrides)));
 });

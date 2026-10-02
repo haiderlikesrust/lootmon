@@ -10,19 +10,21 @@ import { createProvider } from './provider.mjs';
 import { publicSite } from './public-site.mjs';
 import { clientAddress } from './network.mjs';
 import { Community } from './community.mjs';
+import { CoinProfileError } from './coin-profiles.mjs';
 
 const colliderPath = fileURLToPath(new URL('../shared/world-colliders.json', import.meta.url));
 if (!existsSync(colliderPath)) throw new Error('World collider data is required. Refusing to start an unprotected world.');
 const colliderData = JSON.parse(readFileSync(colliderPath, 'utf8'));
 const store = new FileStore(undefined, { kernelLockHeld: process.argv.includes('--authority-lock-held') });
-const game = new Game({ store, colliders: Array.isArray(colliderData) ? colliderData : colliderData.colliders ?? [] });
+let game;
 const auth = new Auth();
 let provider;
+let community;
 let closing = false;
 let authorityLost = false;
 let stopForAuthorityLoss = null;
 try {
-  provider = await createProvider({ env: process.env, onAuthorityLost() {
+  provider = await createProvider({ env: process.env, onActivity(event) { community?.packEvent(event); }, onAuthorityLost() {
     authorityLost = true;
     console.error('Database authority was lost. The game server is stopping to protect prize ownership.');
     stopForAuthorityLoss?.();
@@ -31,10 +33,12 @@ try {
     store.close();
     process.exit(1);
   }
-} catch {
+  store.selectMint(process.env.MEMECOIN_MINT, provider.legacyMint);
+  game = new Game({ store, colliders: Array.isArray(colliderData) ? colliderData : colliderData.colliders ?? [] });
+} catch (error) {
   // Provider/driver errors can contain connection details. Startup diagnostics
   // intentionally omit their raw messages, stacks and environment values.
-  console.error('Treasury provider could not initialize. Check its required configuration and database availability.');
+  console.error(error instanceof CoinProfileError ? error.message : 'Treasury or CA-specific world could not initialize. Check configuration and database availability; preserve both data volumes.');
   store.close();
   process.exit(1);
 }
@@ -47,7 +51,7 @@ const host = process.env.GAME_HOST || '127.0.0.1';
 const distPath = fileURLToPath(new URL('../dist', import.meta.url));
 const secureCookie = process.env.NODE_ENV === 'production' || auth.domain.startsWith('https://');
 const allowedOrigins = new Set((process.env.APP_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173').split(',').map(value => value.trim()).filter(Boolean));
-const community = new Community(game, { onChange(snapshot) {
+community = new Community(game, { onChange(snapshot) {
   for (const ws of clients.keys()) send(ws, { type: 'community', ...snapshot });
 } });
 

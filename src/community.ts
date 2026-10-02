@@ -19,7 +19,7 @@ function transaction(signature:unknown){
   const copy=copyButton(signature,'Copy full confirmed transaction signature');group.append(link,copy.control,copy.details);return group;
 }
 function validMessage(value:unknown):value is ChatMessage {if(!value||typeof value!=='object')return false;const m=value as ChatMessage;return typeof m.id==='string'&&['player','bot'].includes(m.kind)&&typeof m.name==='string'&&typeof m.text==='string'&&timeValid(m.time);}
-function validActivity(value:unknown):value is IslandActivity {if(!value||typeof value!=='object')return false;const m=value as IslandActivity;return typeof m.id==='string'&&['pickup','stolen','deposit','win'].includes(m.kind)&&typeof m.name==='string'&&Number.isFinite(m.tier)&&timeValid(m.time);}
+function validActivity(value:unknown):value is IslandActivity {if(!value||typeof value!=='object')return false;const m=value as IslandActivity;return typeof m.id==='string'&&['pickup','stolen','deposit','win','opening','opened'].includes(m.kind)&&typeof m.name==='string'&&Number.isFinite(m.tier)&&timeValid(m.time);}
 
 export function createCommunityUI(options:Options){
   const dock=node('section','community-dock');dock.setAttribute('aria-label','Island chat');
@@ -86,8 +86,8 @@ export function createCommunityUI(options:Options){
     feed.classList.toggle('expanded',historyOpen);activityToggle.setAttribute('aria-expanded',String(historyOpen));activityCount.textContent=activity.length?`${historyOpen?'Close history':'Last '+Math.min(3,activity.length)} ${historyOpen?'−':'+'}`:'Waiting for a drop';
     activityList.replaceChildren();activityList.hidden=!activity.length;
     for(const item of activity.slice(0,historyOpen?15:3)){
-      const row=node('li',`activity-${item.kind}`),mark=node('span','activity-mark',({pickup:'◇',stolen:'↯',deposit:'⌂',win:'★'})[item.kind]);
-      const text=node('span','activity-text'),name=node('strong','',item.name);text.append(name,document.createTextNode(` ${{pickup:'picked up',stolen:'snatched',deposit:'secured',win:'received'}[item.kind]} a ${money(item.tier)} pack`));
+      const row=node('li',`activity-${item.kind}`),mark=node('span','activity-mark',({pickup:'◇',stolen:'↯',deposit:'⌂',win:'★',opening:'◌',opened:'✦'})[item.kind]);
+      const text=node('span','activity-text'),name=node('strong','',item.name);if(item.kind==='opening'||item.kind==='opened'){text.textContent=item.text??`Looter is opening a ${money(item.tier)} pack…`;}else{text.append(name,document.createTextNode(` ${{pickup:'picked up',stolen:'snatched',deposit:'secured',win:'received'}[item.kind]} a ${money(item.tier)} pack`));}
       row.append(mark,text);if(historyOpen){const time=node('time','',stamp(item.time));time.dateTime=new Date(item.time).toISOString();row.append(time);const tx=transaction(item.signature);if(tx)row.append(tx);}activityList.append(row);
     }
   }

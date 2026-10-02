@@ -259,6 +259,10 @@ test('provider reserves available tiers before purchase, waits for custody, repl
       if (text.startsWith('CREATE TABLE') || ['BEGIN', 'COMMIT', 'ROLLBACK'].includes(text)) return result([]);
       if (text.includes('pg_try_advisory_lock')) return result([{ locked: true }]);
       if (text.includes('pg_advisory_unlock')) return result([]);
+      if (text.includes('to_regclass')) return result([{ relation: this.identity ? 'cards_provider_identity' : null }]);
+      if (text.startsWith('INSERT INTO lootmon_coin_profiles')) { this.profile = { coin_mint: args[0], treasury_wallet: args[1], table_prefix: args[2] || 'cards_provider_' }; return result([]); }
+      if (text.startsWith('SELECT * FROM lootmon_coin_profiles')) return result(this.profile ? [this.profile] : []);
+      if (text.includes('AS spent,') && text.includes('AS refunded,')) return result([{ spent: String(this.spent), refunded: '0', reserved: String([...this.reservations.values()].filter(row => row.status !== 'complete').reduce((sum, row) => sum + row.tier * 1_000_000, 0)) }]);
       if (text.startsWith('INSERT INTO cards_provider_identity')) { this.identity = { coin_mint: args[0], treasury_wallet: args[1] }; return result([]); }
       if (text.startsWith('SELECT coin_mint,treasury_wallet')) return result([this.identity]);
       if (text.startsWith('SELECT * FROM cards_provider_jobs')) return result(this.jobs.has(args[0]) ? [this.jobs.get(args[0])] : []);
@@ -268,7 +272,7 @@ test('provider reserves available tiers before purchase, waits for custody, repl
       if (text.startsWith('SELECT COUNT(*)')) return result([{ count: 0 }]);
       if (text.includes('AS fees_total')) {
         const reserved = [...this.reservations.values()].filter(row => row.status !== 'complete').reduce((sum, row) => sum + row.tier * 1_000_000, 0);
-        return result([{ fees_total: '1000000000', fees_recent: '126000000', spent_total: String(this.spent), spent_today: String(this.spent), refunds_total: '0', refunds_today: '0', reserved: String(reserved), reserved_today: String(reserved), last_drop: this.drops.at(-1)?.created_at ?? null, last_250: null, last_500: null }]);
+        return result([{ outstanding_packs: [...this.prizes.values()].filter(p => p.status === 'available' && p.data.tierUsd && !this.awards.has(p.id)).length + [...this.reservations.values()].filter(r => !['complete','refunded'].includes(r.status)).length, fees_total: '1000000000', fees_recent: '126000000', spent_total: String(this.spent), spent_today: String(this.spent), refunds_total: '0', refunds_today: '0', reserved: String(reserved), reserved_today: String(reserved), last_drop: this.drops.at(-1)?.created_at ?? null, last_250: null, last_500: null }]);
       }
       if (text.startsWith('INSERT INTO cards_provider_drops')) { this.drops.push({ id: args[0], created_at: args[1], plan: JSON.parse(args[2]) }); return result([]); }
       if (text.startsWith('INSERT INTO cards_provider_reservations')) { this.reservations.set(args[0], { id: args[0], tier: args[2], status: 'pending', created_at: args[3] }); return result([]); }
@@ -347,7 +351,7 @@ test('provider reserves available tiers before purchase, waits for custody, repl
   assert.deepEqual(await provider.award(intent), { status: 'confirmed', signature: 'fixture-confirmed-transfer' });
   assert.deepEqual(await provider.award(intent), { status: 'confirmed', signature: 'fixture-confirmed-transfer' });
   assert.equal(transferCalls, 2, 'confirmed award must not re-enter transfer execution');
-  assert.equal((await provider.tick()).length, inventory.length - 1);
+  assert.equal((await provider.tick()).length, inventory.length, 'securing one pack opens one refill slot');
   const secondIntent = { id: inventory[1].id, mint: inventory[1].mint, wallet: winner };
   winnerEligible = false;
   const ineligible = await provider.award(secondIntent);
@@ -364,7 +368,8 @@ test('provider reserves available tiers before purchase, waits for custody, repl
   assert.equal(transferCalls, unsafeCalls, 'quarantine never bypasses intent validation or silently retries');
   feesUnavailable = true;
   await provider.tick();
-  assert.equal(database.drops.length, 2, 'one quarantined purchase must not freeze unrelated funded drops');
+  assert.ok(database.drops.length >= 2, 'one quarantined purchase must not freeze unrelated funded drops');
+  assert.ok(provider.status.outstandingPacks <= 5, 'pending purchases count against the island cap');
   assert.equal(provider.status.ready, true);
   assert.equal(provider.status.feeRecovery.state, 'retrying', 'fee outages are recorded and retried independently');
   assert.equal(provider.status.recovery.awardsQuarantined, 1);
@@ -666,4 +671,23 @@ test('fee accounting rejects mismatched or stale valuation quotes before crediti
     assert.deepEqual(ledger.get('fees:fixture'), { amount: '25000000', signature: 'confirmed-fees' });
     assert.equal(completed, 1);
   } finally { Date.now = originalNow; configure({}); }
+});
+
+
+test('opening announcements happen after confirmed payment and do not repeat on provider retries', async () => {
+  const records = new Map([
+    ['pack:round', { status: 'opening', data: { tier: 25, funded: true, memo: 'paid-order', paymentSignature: 'confirmed-payment' } }],
+    ['pack:round:payment', { status: 'confirmed', data: { signature: 'confirmed-payment' } }],
+  ]);
+  const jobs = { get: async id => records.get(id),
+    put: async (id, kind, status, data) => records.set(id, { kind, status, data: structuredClone(data) }),
+    db: { query: async () => ({ rows: [] }) } };
+  const provider = new Providers({}, jobs);
+  const announcements = [];
+  provider.onOpening = event => announcements.push(event);
+  provider.cc = async path => path.startsWith('/pack/status') ? { pack: {} } : { code: 'WAITING_FOR_WEBHOOK' };
+  await assert.rejects(provider.purchase('round', 25, {}), PendingOperation);
+  await assert.rejects(provider.purchase('round', 25, {}), PendingOperation);
+  assert.deepEqual(announcements, [{ id: 'round', tier: 25 }]);
+  assert.equal(records.get('pack:round').data.openingAnnounced, true);
 });

@@ -15,6 +15,24 @@ const confirmed = (id, value = 25, extra = {}) => ({ id, status: 'transferred', 
   tier: 25, value, securedAt: START, confirmedAt: START + 500, mint: `private-mint-${id}`, name: 'PRIVATE CARD NAME', ...extra });
 const account = (name, collection = []) => ({ name, collection, score: 99_999, character: 'ranger' });
 
+test('Looter announces opening and verified insured value once, without exposing hiding coordinates', () => {
+  const community = new Community(new Game({ now: START }));
+  community.packEvent({ kind: 'opening', id: 'funded-order', tier: 25 }, START);
+  community.packEvent({ kind: 'opening', id: 'funded-order', tier: 25 }, START + 1);
+  community.packEvent({ kind: 'opened', id: 'funded-order', tier: 25, name: '<Rare card>', insuredValue: 68.5, x: 99, z: 45 }, START + 2);
+  const snapshot = community.snapshot();
+  assert.equal(snapshot.chat.length, 2);
+  assert.match(snapshot.chat[0].text, /Opening a \$25 pack/);
+  assert.match(snapshot.chat[1].text, /insured value \$68\.50 \(provider-reported\)/);
+  assert.equal(snapshot.activity[0].insuredValue, 68.5);
+  assert.equal(snapshot.activity[0].x, undefined);
+  assert.equal(snapshot.activity[0].z, undefined);
+  community.packEvent({ kind: 'opened', id: 'missing-value', tier: 25, insuredValue: null });
+  assert.match(community.snapshot().activity[0].text, /insured value unavailable/);
+  assert.equal(community.leaderboard().entries.length, 0, 'opening is not a player win');
+  community.close();
+});
+
 test('an unfunded new world has an empty community and no fabricated leaderboard rows', () => {
   const game = new Game({ now: START });
   let changes = 0;

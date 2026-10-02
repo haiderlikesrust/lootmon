@@ -5,14 +5,11 @@
 export const PACK_TIERS = Object.freeze([25, 50, 100, 250, 500]);
 
 export const TREASURY_POLICY = Object.freeze({
-  reserveUsd: 500,
-  liquidityAllocationBps: 1500,
-  feeAllocationBps: 7000,
+  reserveUsd: 0,
   maxCycleUsd: 1000,
   dailyRemainingUsd: 1500,
-  maxPacks: 8,
-  fastCadenceHourlyFeesUsd: 300,
-  fastCadenceLiquidUsd: 500,
+  maxPacks: 5,
+  recheckMs: 15_000,
 });
 
 const MINUTE_MS = 60_000;
@@ -48,23 +45,8 @@ function timestamp(value, name, nowMs) {
   return value;
 }
 
-/**
- * @param {object} input
- * @param {number} input.treasuryUsd Confirmed liquid funds, conservatively valued.
- * @param {number} input.recentFeesUsd Realized net fees in feeWindowMinutes.
- * @param {number} input.nowMs Explicit Unix time, making every plan reproducible.
- * @param {number} [input.obligationsUsd=0] Existing purchases and prize commitments.
- * @param {number} [input.reserveUsd=500] Protected funds in addition to obligations.
- * @param {number} [input.feeWindowMinutes=60] Width of the observed fee-flow window.
- * @param {number} [input.accruedFeesUsd] Unallocated fee proceeds; defaults to recent fees.
- * @param {'auto'|10|60} [input.cadenceMinutes='auto'] Fast or hourly drops.
- * @param {number|null} [input.lastDropAtMs=null] Last committed drop, not last poll.
- * @param {Record<string,number>} [input.lastHighTierAtMs={}] Last committed $250/$500 drops.
- * @param {number} [input.dailyRemainingUsd=1500] Actual remaining daily limit.
- * @param {number} [input.maxCycleUsd=1000] Absolute per-cycle limit.
- * @param {number} [input.maxPacks=8] Maximum number of new packs.
- * @param {number[]} [input.availableTiers] Provider-confirmed available tiers.
- * @returns {{eligible:boolean,reason:string,budgetUsd:number,spendUsd:number,packs:Array<{tierUsd:number,quantity:number,difficulty:string}>,cadenceMinutes:number,nextDropAtMs:number,metrics:object}}
+/** Balance-driven refill, bounded by outstanding inventory and durable obligations.
+ * Recent fees affect premium tier selection only; deposits can fund common packs.
  */
 export function planDrop(input) {
   if (!input || typeof input !== 'object') throw new TypeError('A treasury snapshot is required');
@@ -73,13 +55,12 @@ export function planDrop(input) {
     obligationsUsd = 0,
     reserveUsd = TREASURY_POLICY.reserveUsd,
     feeWindowMinutes = 60,
-    accruedFeesUsd = recentFeesUsd,
-    cadenceMinutes: requestedCadence = 'auto',
     lastDropAtMs = null,
     lastHighTierAtMs = {},
     dailyRemainingUsd = TREASURY_POLICY.dailyRemainingUsd,
     maxCycleUsd = TREASURY_POLICY.maxCycleUsd,
     maxPacks = TREASURY_POLICY.maxPacks,
+    outstandingPacks = 0,
     availableTiers = PACK_TIERS,
   } = input;
 
@@ -91,11 +72,11 @@ export function planDrop(input) {
   for (const tier of [250, 500]) {
     if (lastHighTierAtMs[tier] !== undefined) timestamp(lastHighTierAtMs[tier], `lastHighTierAtMs.${tier}`, nowMs);
   }
-  if (!['auto', 10, 60].includes(requestedCadence)) throw new RangeError('cadenceMinutes must be auto, 10 or 60');
   if (!Number.isFinite(feeWindowMinutes) || feeWindowMinutes < 1 || feeWindowMinutes > 1440) {
     throw new RangeError('feeWindowMinutes must be between 1 and 1440');
   }
   if (!Number.isSafeInteger(maxPacks) || maxPacks < 1 || maxPacks > 32) throw new RangeError('maxPacks must be between 1 and 32');
+  if (!Number.isSafeInteger(outstandingPacks) || outstandingPacks < 0) throw new RangeError('outstandingPacks must be a nonnegative integer');
   if (!Array.isArray(availableTiers) || availableTiers.some(tier => !PACK_TIERS.includes(tier))) {
     throw new RangeError('availableTiers must contain supported numeric pack tiers');
   }
@@ -104,18 +85,13 @@ export function planDrop(input) {
   const obligations = moneyCents(obligationsUsd, 'obligationsUsd', true);
   const reserve = moneyCents(reserveUsd, 'reserveUsd', true);
   const recentFees = moneyCents(recentFeesUsd, 'recentFeesUsd');
-  const accruedFees = moneyCents(accruedFeesUsd, 'accruedFeesUsd');
   const dailyRemaining = moneyCents(dailyRemainingUsd, 'dailyRemainingUsd');
   const maxCycle = moneyCents(maxCycleUsd, 'maxCycleUsd');
   const liquid = Math.max(0, treasury - obligations - reserve);
   const hourlyFeesUsd = recentFees / 100 * 60 / feeWindowMinutes;
-  const cadenceMinutes = requestedCadence === 'auto'
-    ? (hourlyFeesUsd >= TREASURY_POLICY.fastCadenceHourlyFeesUsd && liquid >= TREASURY_POLICY.fastCadenceLiquidUsd * 100 ? 10 : 60)
-    : requestedCadence;
-  const liquidityBudget = Math.floor(liquid * TREASURY_POLICY.liquidityAllocationBps / 10_000);
-  const feeBudget = Math.floor(accruedFees * TREASURY_POLICY.feeAllocationBps / 10_000);
-  const budget = Math.min(liquidityBudget, feeBudget, dailyRemaining, maxCycle);
-  const dueAtMs = lastDropAtMs === null ? nowMs : lastDropAtMs + cadenceMinutes * MINUTE_MS;
+  const slots = Math.max(0, maxPacks - outstandingPacks);
+  const budget = Math.min(liquid, dailyRemaining, maxCycle);
+  const cadenceMinutes = TREASURY_POLICY.recheckMs / MINUTE_MS;
   const result = {
     eligible: false,
     reason: 'insufficient_budget',
@@ -123,20 +99,19 @@ export function planDrop(input) {
     spendUsd: 0,
     packs: [],
     cadenceMinutes,
-    nextDropAtMs: dueAtMs > nowMs ? dueAtMs : nowMs + cadenceMinutes * MINUTE_MS,
+    nextDropAtMs: nowMs + TREASURY_POLICY.recheckMs,
     metrics: {
       liquidUsd: liquid / 100,
       protectedUsd: (obligations + reserve) / 100,
       hourlyFeesUsd: Math.floor(hourlyFeesUsd * 100) / 100,
-      liquidityBudgetUsd: liquidityBudget / 100,
-      feeBudgetUsd: feeBudget / 100,
-      accruedFeesUsd: accruedFees / 100,
+      outstandingPacks,
+      availableSlots: slots,
       projectedRemainingUsd: treasury / 100,
       unspentBudgetUsd: budget / 100,
     },
   };
 
-  if (dueAtMs > nowMs) return { ...result, reason: 'cadence' };
+  if (!slots) return { ...result, reason: 'world_full' };
   if (budget < 2500) return result;
   if (!availableTiers.length) return { ...result, reason: 'inventory_unavailable' };
 
@@ -160,7 +135,7 @@ export function planDrop(input) {
   // Fallback to a smaller available tier whenever the desired one is unfunded.
   const commonCycle = [100, 50, 25, 50, 25];
   let slot = 0;
-  while (chosen.length < maxPacks) {
+  while (chosen.length < slots) {
     const desired = commonCycle[slot++ % commonCycle.length];
     const tier = [100, 50, 25].find(value => value <= desired && availableTiers.includes(value) && value * 100 <= remaining);
     if (tier !== undefined) add(tier);

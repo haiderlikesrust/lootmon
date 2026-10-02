@@ -17,7 +17,7 @@ export function configure(env = process.env) {
     USDC_MINT: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     GAS_RESERVE_SOL: 0.05,
     SLIPPAGE_BPS: 100,
-    TREASURY_RESERVE_USD: 500,
+    TREASURY_RESERVE_USD: 0,
     DAILY_CAP_USD: 1500,
     MAX_CYCLE_USD: 1000,
   });

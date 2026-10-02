@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { planDrop } from './treasury.mjs';
 import { config, configure, configBlockers } from './integrations/config.mjs';
 import { beginRecoveryAttempt, finishRecoveryAttempt, recoveryDue, recoveryResult } from './integrations/recovery.mjs';
+import { profileSql, selectProviderProfile } from './coin-profiles.mjs';
 
 const LOCK_ID = 739_214_617;
 const AUTHORITY_LOCK_ID = 739_214_618;
@@ -54,7 +55,7 @@ CREATE INDEX IF NOT EXISTS cards_provider_reservations_status ON cards_provider_
  * Call only once per server process: integration modules share server config.
  * No secrets or provider response payloads are exposed through status.
  */
-export async function createProvider({ env = process.env, runtime = {}, onAuthorityLost = () => {} } = {}) {
+export async function createProvider({ env = process.env, runtime = {}, onAuthorityLost = () => {}, onActivity = () => {} } = {}) {
   configure(env);
   const blockers = configBlockers();
   const state = {
@@ -86,8 +87,18 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
   for (const key of ['MEMECOIN_MINT', 'COLLECTOR_CRYPT_PAYMENT_WALLET', 'CARDS_MINT', 'USDC_MINT']) {
     try { new PublicKey(config[key]); } catch { throw new Error(`${key} must be a valid Solana public key`); }
   }
-  const pool = new Pool({ connectionString: config.DATABASE_URL, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30_000 });
-  pool.on('error', () => { state.ready = false; state.error = 'Treasury database connection failed'; });
+  const rawPool = new Pool({ connectionString: config.DATABASE_URL, max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 30_000 });
+  rawPool.on('error', () => { state.ready = false; state.error = 'Treasury database connection failed'; });
+  let prefix = 'cards_provider_';
+  let profile;
+  const pool = {
+    query: (sql, args) => rawPool.query(profileSql(sql, prefix), args),
+    end: () => rawPool.end(),
+    async connect() {
+      const client = await rawPool.connect();
+      return { query: (sql, args) => client.query(profileSql(sql, prefix), args), release: () => client.release() };
+    },
+  };
   const db = { query: (sql, parameters) => pool.query(namespaceQuery(sql), parameters) };
   const jobs = new Jobs(db);
   const chain = new Chain(jobs);
@@ -100,7 +111,7 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
     // This session lives for the entire game-server lifetime, not one poll.
     // A different GAME_DATA_DIR must never replay the same prize inventory
     // into another independently authoritative world.
-    authorityClient = await pool.connect();
+    authorityClient = await rawPool.connect();
     const lease = (await authorityClient.query('SELECT pg_try_advisory_lock($1) AS locked', [AUTHORITY_LOCK_ID])).rows[0];
     if (!lease.locked) throw new Error('Another game authority already owns this provider database');
     authorityClient.on?.('error', () => {
@@ -109,18 +120,24 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
       state.error = 'Database authority lease was lost; restart the game server before resuming';
       onAuthorityLost();
     });
+    profile = await selectProviderProfile(rawPool, config.MEMECOIN_MINT, chain.address);
+    prefix = profile.selected.table_prefix;
     await pool.query(SCHEMA);
     await pool.query('INSERT INTO cards_provider_identity(id,coin_mint,treasury_wallet) VALUES(1,$1,$2) ON CONFLICT(id) DO NOTHING', [config.MEMECOIN_MINT, chain.address]);
     const identity = (await pool.query('SELECT coin_mint,treasury_wallet FROM cards_provider_identity WHERE id=1')).rows[0];
     if (identity.coin_mint !== config.MEMECOIN_MINT || identity.treasury_wallet !== chain.address) {
-      throw new Error('Provider ledger belongs to a different coin or treasury; use a separate database');
+      throw new Error('Provider ledger identity does not match this CA and treasury');
     }
+    await profile.register();
   } catch (error) {
+    await authorityClient?.query('SELECT pg_advisory_unlock($1)', [AUTHORITY_LOCK_ID]).catch(() => {});
     authorityClient?.release();
     await pool.end();
     throw error;
   }
   const providers = new Providers(chain, jobs);
+  const publish = event => { try { onActivity(event); } catch { /* Presentation cannot interrupt a financial operation. */ } };
+  providers.onOpening = event => publish({ ...event, kind: 'opening' });
   const settings = { paused: false, dailyCapUsd: config.DAILY_CAP_USD, gasReserveSol: config.GAS_RESERVE_SOL, slippageBps: config.SLIPPAGE_BPS };
   let closed = false;
   let activeOperations = 0;
@@ -161,9 +178,11 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
       await pool.query('UPDATE cards_provider_reservations SET recovery=$2,status=$3 WHERE id=$1', [reservation.id, JSON.stringify(attempt), 'pending']);
       try {
         const prize = await providers.purchase(reservation.id, reservation.tier, settings);
+        if (prize.coinMint !== config.MEMECOIN_MINT || await profile.prizeOwnedElsewhere(prize.mint)) throw new ReviewRequired('Collectible belongs to a different CA profile');
         const funded = { ...prize, tierUsd: reservation.tier };
         await pool.query("UPDATE cards_provider_prizes SET data=$2 WHERE id=$1", [prize.id, JSON.stringify(funded)]);
         await pool.query("UPDATE cards_provider_reservations SET status='complete',prize_id=$2,recovery=$3 WHERE id=$1", [reservation.id, prize.id, JSON.stringify(finishRecoveryAttempt(attempt, 'confirmed', now()))]);
+        publish({ kind: 'opened', id: reservation.id, tier: reservation.tier, name: prize.name, insuredValue: prize.insuredValue });
       } catch (error) {
         const recovery = finishRecoveryAttempt(attempt, error, now());
         const status = error instanceof PurchaseRefunded ? 'refunded' : recovery.state === 'quarantined' ? 'quarantined' : 'pending';
@@ -230,27 +249,28 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
         WHERE NOT EXISTS(SELECT 1 FROM cards_provider_ledger l WHERE l.id='pack:'||r.id)),0)::text AS reserved,
       COALESCE((SELECT SUM(tier*1000000::bigint) FROM cards_provider_reservations r WHERE r.created_at>=$2
         AND NOT EXISTS(SELECT 1 FROM cards_provider_ledger l WHERE l.id='pack:'||r.id)),0)::text AS reserved_today,
+      ((SELECT COUNT(*) FROM cards_provider_prizes p WHERE p.status='available' AND p.data ? 'tierUsd'
+        AND NOT EXISTS(SELECT 1 FROM cards_provider_awards a WHERE a.prize_id=p.id)) +
+       (SELECT COUNT(*) FROM cards_provider_reservations WHERE status NOT IN ('complete','refunded')))::int AS outstanding_packs,
       (SELECT MAX(created_at) FROM cards_provider_drops) AS last_drop,
       (SELECT MAX(created_at) FROM cards_provider_reservations WHERE tier=250) AS last_250,
       (SELECT MAX(created_at) FROM cards_provider_reservations WHERE tier=500) AS last_500`, [nowMs - 600_000, dayStart])).rows[0];
-    // A spent dollar consumes a dollar of the 70% fee allocation; divide the
-    // remaining allocation by 0.7 because the pure planner applies that ratio.
-    const feeAllocation = BigInt(accounting.fees_total) * 7n / 10n - BigInt(accounting.spent_total) + BigInt(accounting.refunds_total) - BigInt(accounting.reserved);
-    const accrued = feeAllocation > 0n ? feeAllocation * 10n / 7n : 0n;
+    const dailyCommitted = await profile.dailyCommitted(dayStart);
     const plan = planDrop({
       nowMs, treasuryUsd: asUsd(usdc + cardsValue), obligationsUsd: asUsd(accounting.reserved),
       reserveUsd: config.TREASURY_RESERVE_USD,
       recentFeesUsd: asUsd(accounting.fees_recent), feeWindowMinutes: 10,
-      accruedFeesUsd: asUsd(accrued),
+      outstandingPacks: accounting.outstanding_packs,
       lastDropAtMs: accounting.last_drop === null ? null : Number(accounting.last_drop),
       lastHighTierAtMs: Object.fromEntries([[250, accounting.last_250], [500, accounting.last_500]].filter(([, at]) => at !== null).map(([tier, at]) => [tier, Number(at)])),
-      dailyRemainingUsd: Math.max(0, config.DAILY_CAP_USD - asUsd(BigInt(accounting.spent_today) - BigInt(accounting.refunds_today) + BigInt(accounting.reserved_today))),
+      dailyRemainingUsd: Math.max(0, config.DAILY_CAP_USD - asUsd(dailyCommitted)),
       maxCycleUsd: config.MAX_CYCLE_USD,
       availableTiers: machines.map(machine => machine.price),
     });
     Object.assign(state, {
       ready: true, balance: asUsd(usdc + cardsValue), fees10m: asUsd(accounting.fees_recent),
       reserved: asUsd(accounting.reserved), nextDropAt: plan.nextDropAtMs,
+      outstandingPacks: accounting.outstanding_packs, maxOutstandingPacks: 5, dropReason: plan.reason,
       budgetUsd: plan.budgetUsd, cadenceMinutes: plan.cadenceMinutes, lastUpdatedAt: nowMs, refundsVerifiedUsd: asUsd(accounting.refunds_total),
     });
     return plan;
@@ -275,6 +295,7 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
 
   return {
     status: state,
+    legacyMint: profile.legacyMint,
     async tick() {
       return await withLock(async client => {
         state.error = null;

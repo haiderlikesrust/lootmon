@@ -4,20 +4,13 @@ The game uses wallet-gated access and a mainnet provider integration. It does no
 
 ## Treasury policy
 
-Call `planDrop(snapshot)` with an explicit `nowMs` and USD-denominated numbers. `treasuryUsd` is confirmed liquid value after conservative execution costs; `obligationsUsd` includes existing reserved purchases, withdrawals, and unpaid prizes. The default separate reserve is $500. Do not include an NFT's estimated resale value or anticipated future fees as liquid funds.
+The worker checks confirmed USDC and conservatively executable CARDS value every 15 seconds. Direct deposits and creator fees can fund purchases. There is no $500 cash reserve, percentage allocation or minimum historical fee allowance; retain the separate 0.05 SOL gas reserve. A $25 pack needs at least $25 of spendable value after conversion costs and existing reservations.
 
-The spending ceiling is the smallest of:
+The island targets at most five outstanding packs. Purchased unclaimed cards (including carried or queued packs) and pending/quarantined purchase reservations all occupy slots. A successful base capture reserves its winner and frees a slot for the next funding check. Restarting does not reset counts. A full world pauses new purchases, while pending operations continue recovery. Refunded purchases free their slot only after verified refund settlement.
 
-- 15% of liquid funds after obligations and reserve.
-- 70% of unallocated, realized fee proceeds (`accruedFeesUsd`).
-- The remaining daily limit (default $1,500, supplied by the caller's ledger).
-- A $1,000 per-drop cap.
+The spending ceiling is the smallest of uncommitted wallet liquidity, the remaining $1,500 daily wallet cap across all CA profiles, and a $1,000 per-cycle cap. Outstanding reservations remain protected. Fee history is retained for reporting and premium selection, but is not a gate on common packs. The next recheck time does not promise a purchase or provider completion.
 
-`recentFeesUsd` over `feeWindowMinutes` measures the current fee rate, while `accruedFeesUsd` tracks proceeds still available to allocate. These are different values: the rate should decay when fees slow; accrued funds can accumulate until a $25 pack is affordable. When omitted, accrued fees default to the recent-fee amount for isolated policy calculations. The live adapter subtracts all reserved and completed purchases from the cumulative 70% fee allocation before passing remaining proceeds to the planner.
-
-Automatic cadence is ten minutes when hourly net fees are at least $300 and uncommitted liquid funds are at least $500; otherwise it is hourly. A caller can explicitly select 10 or 60 minutes. Persist `lastDropAtMs` only when a purchase reservation commits; repeatedly asking the planner for a quote must not reset it. `nextDropAtMs` is the next due/recheck time, not a promise that funding will exist then.
-
-Common packs use $25, $50, and $100 tiers and varied placement difficulties. At most one premium pack may appear in each plan. A $250 pack needs $2,000 liquid funds, $300/hour recent fees, and two hours since any premium drop. A $500 pack needs $5,000 liquid funds, $1,200/hour recent fees, and six hours since any premium drop. Their cooldown timestamps are persisted in `lastHighTierAtMs`, keyed by `250` and `500`. The total ceiling still applies. `availableTiers` should be the provider's currently verified inventory, and `maxPacks` bounds the number of new objectives.
+Common packs use $25, $50, and $100 tiers and varied placement difficulties. At most one premium pack may appear in each plan. A $250 pack needs $2,000 liquid funds, $300/hour recent fees, and two hours since any premium drop. A $500 pack needs $5,000 liquid funds, $1,200/hour recent fees, and six hours since any premium drop. Their cooldown timestamps are persisted in `lastHighTierAtMs`, keyed by `250` and `500`. The total ceiling still applies. `availableTiers` should be the provider's currently verified inventory, and `maxPacks` bounds total outstanding objectives, including `outstandingPacks`.
 
 The result contains `eligible`, a machine-readable `reason`, `budgetUsd`, `spendUsd`, grouped `packs` with `tierUsd`, `quantity`, and `difficulty`, plus cadence and audit metrics. Invalid numeric data throws before any plan is returned. Computation uses integer cents, floors assets, and rounds obligations up. Pack price is the acquisition cost, not a guarantee of the resulting collectible's resale value.
 
@@ -26,16 +19,15 @@ const plan = planDrop({
   nowMs: Date.now(),
   treasuryUsd: 2840,
   obligationsUsd: 975,
-  reserveUsd: 500,
+  outstandingPacks: 3,
   recentFeesUsd: 126,
   feeWindowMinutes: 10,
-  accruedFeesUsd: 126,
   lastDropAtMs: null,
   lastHighTierAtMs: {},
   dailyRemainingUsd: 1500,
   availableTiers: [25, 50, 100, 250, 500],
 });
-// $88.20 ceiling, one $50 pack and one $25 pack, ten-minute cadence.
+// At most two new packs, constrained by spendable balance and provider inventory.
 ```
 
 Production calls must run inside a serialized treasury reservation workflow. Atomically reserve the planned spend, charge that allocation against the accrued-fee ledger, and save the cadence and premium timestamps before dispatching purchase jobs. Reserve transaction and conversion costs separately. Retried requests use the same drop and purchase IDs. A dry-run function cannot by itself prevent two workers from allocating the same money.
@@ -61,7 +53,7 @@ Set these server-side variables through deployment secrets and environment confi
 | `COLLECTOR_CRYPT_PAYMENT_WALLET` | Provider-confirmed payment recipient; mismatched transactions are rejected. |
 | `COLLECTOR_CRYPT_API_KEY` | Optional partner API credential. |
 
-The treasury address is derived from the signing key, then its creator-fee recipient/shareholder authority is checked on-chain. No duplicate `FEE_RECIPIENT` variable is required. Public mints, provider API bases, the 0.05 SOL gas reserve, 100 bps slippage cap, $500 liquid reserve, $1,500 daily cap, and $1,000 cycle cap are code defaults in `server/integrations/config.mjs`.
+The treasury address is derived from the signing key, then its creator-fee recipient/shareholder authority is checked on-chain. No duplicate `FEE_RECIPIENT` variable is required. Public mints, provider API bases, the 0.05 SOL gas reserve, 100 bps slippage cap, zero additional USD reserve, $1,500 daily cap, and $1,000 cycle cap are code defaults in `server/integrations/config.mjs`.
 
 The reference source, README, deploy templates, and allowlisted public-address fields contained **no configured game mint, treasury address, owner address, or provider payment wallet**. Their example entries were empty. CARDS and USDC defaults do not supply those missing identities. Confirm the launched game's exact mint and provider recipient rather than inferring them from a symbol or token search result.
 
@@ -97,4 +89,4 @@ Two differences must be changed when adapting that code: `shared/game.ts` curren
 6. A successful base capture freezes the pack from theft and creates an idempotent award job for the exact asset and recipient. Eligibility is checked before first signing; retries reconcile any already signed transfer. The collection shows automatic retry timing or a verification quarantine until confirmation. Restarts resume the same award, and provider refunds follow the verified automatic recovery policy above. Physical redemption, delivery addresses, and shipping are outside this game's scope; its delivery completes with the collectible transferred to the winner's wallet.
 7. Before a public prize launch, resolve the applicable promotion/game rules and eligibility regions, provider permission, and Pokémon/card artwork rights. Those product decisions are separate from the code's transaction and gameplay checks.
 
-The planner tests run with `node --test tests/treasury.test.mjs`. They cover fund protection, caps, cadence boundaries, accumulation under slow fee flow, premium cooldowns, inventory restrictions, invalid inputs, deterministic behavior, and varied-budget invariants.
+The planner tests run with `node --test tests/treasury.test.mjs`. They cover fund protection, caps, direct-deposit funding, full-world pause and refill, premium cooldowns, inventory restrictions, invalid inputs, deterministic behavior, and varied-budget invariants.

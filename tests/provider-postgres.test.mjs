@@ -7,6 +7,7 @@ import { createProvider } from '../server/provider.mjs';
 import { Jobs, PendingOperation, ReviewRequired, PurchaseRefunded } from '../server/integrations/jobs.mjs';
 import { Providers } from '../server/integrations/providers.mjs';
 import { configure, config } from '../server/integrations/config.mjs';
+import { coinKey } from '../server/coin-profiles.mjs';
 
 // Optional integration coverage. This must point to a dedicated test database,
 // never the app's DATABASE_URL. Only a randomly named, marked schema is removed.
@@ -147,7 +148,7 @@ test('PostgreSQL persists provider recovery, excludes another authority, and cre
     assert.deepEqual(await provider.award(intent), { status: 'confirmed', signature });
     assert.equal(state.transferBuilds, 1);
     assert.equal((await query('SELECT COUNT(*)::int AS count FROM awards')).rows[0].count, 1);
-    assert.equal((await provider.tick()).length, inventory.length - 1);
+    assert.equal((await provider.tick()).length, inventory.length, 'one secured pack is replaced by one new funded pack');
 
     state.refundReservation = 'fixture-refund-reservation';
     await query("INSERT INTO reservations(id,drop_id,tier,status,created_at) VALUES($1,$2,25,'pending',$3)", [state.refundReservation, drop, clock]);
@@ -161,7 +162,7 @@ test('PostgreSQL persists provider recovery, excludes another authority, and cre
     state.refundReady = true;
     await provider.tick();
     assert.equal(provider.status.refundsVerifiedUsd, 25);
-    assert.ok(provider.status.budgetUsd >= budgetBeforeRefund + 24.99 - 1e-6, 'verified refund restores only the paid pack allocation');
+    assert.ok(provider.status.budgetUsd <= 1000, 'verified refund never bypasses the per-cycle cap');
     assert.equal((await query('SELECT status FROM reservations WHERE id=$1', [state.refundReservation])).rows[0].status, 'refunded');
     await provider.close(); provider = await open();
     await provider.tick();
@@ -170,6 +171,26 @@ test('PostgreSQL persists provider recovery, excludes another authority, and cre
     const refunds = new Providers(new OfflineChain(realJobs), realJobs);
     await assert.rejects(refunds.recordRefund('pack:second-refund', { paymentSignature: 'different-payment', memo: 'different-order' }, 25, 'offline-fixture-verified-refund'), ReviewRequired);
     assert.equal((await query("SELECT COUNT(*)::int AS count FROM ledger WHERE kind='refund' AND data->>'verified'='true'")).rows[0].count, 1);
+
+    const restoredInventory = (await provider.tick()).map(p => p.id);
+    // Same deployment/database: unsettled payments cannot be hidden by changing CA.
+    const otherCoin = Keypair.generate().publicKey.toBase58();
+    const openOther = () => createProvider({ env: { ...env, MEMECOIN_MINT: otherCoin }, runtime: { Pool: IsolatedPool, Chain: OfflineChain, Providers: OfflineProviders, now: () => clock } });
+    await provider.close(); provider = null;
+    await query("INSERT INTO jobs(id,kind,status,data,created_at,updated_at) VALUES('unsettled','swap','submitted','{}',0,0)");
+    await assert.rejects(openOther(), /CA switch blocked/);
+    await query("UPDATE jobs SET status='confirmed' WHERE id='unsettled'");
+    provider = await openOther();
+    assert.equal(provider.legacyMint, coin);
+    const otherQuery = (sql, args) => admin.query(sql.replace(/\b(jobs|ledger|prizes|reservations|awards|drops)\b/g, name => `"${schema}".lc_${coinKey(otherCoin)}_${name}`), args);
+    assert.equal((await otherQuery('SELECT COUNT(*)::int AS count FROM prizes')).rows[0].count, 0);
+    assert.equal((await otherQuery('SELECT COUNT(*)::int AS count FROM ledger')).rows[0].count, 0, 'new CA does not inherit recorded fees');
+    // Existing wallet spending consumes the same daily cap after changing CA.
+    await query("INSERT INTO ledger(id,kind,amount_micros,created_at) VALUES('daily-cap-fixture','pack',1500000000,$1)", [clock]);
+    assert.deepEqual(await provider.tick(), []);
+    assert.equal((await otherQuery('SELECT COUNT(*)::int AS count FROM reservations')).rows[0].count, 0, 'CA switch cannot reset wallet daily spending');
+    await provider.close(); provider = await open();
+    assert.deepEqual((await provider.tick()).map(p => p.id), restoredInventory, 'switching back restores original unclaimed inventory');
   } finally {
     await provider?.close();
     configure({});

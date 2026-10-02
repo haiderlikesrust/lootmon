@@ -242,6 +242,11 @@ export class Providers {
             throw new PurchaseRefunded(d.refund);
         }
         if (!d.opened) {
+            if (!d.openingAnnounced) {
+                d.openingAnnounced = true;
+                await this.jobs.put(id, 'pack', 'opening', d);
+                try { this.onOpening?.({ id: roundId, tier }); } catch { /* Chat is optional. */ }
+            }
             const opened = await this.cc('/openPack', { memo: d.memo });
             if (opened.code === 'WAITING_FOR_WEBHOOK' || !opened.nft_address)
                 throw new PendingOperation('Waiting for the pack provider to confirm the payment.');
@@ -266,7 +271,7 @@ export class Providers {
             catch { /* Asset may be Core; provider metadata remains authoritative for display. */ }
         }
         const insured = Number(status.send?.insured_value ?? meta.attributes?.find((a) => /insured.?value/i.test(a.trait_type))?.value ?? 0);
-        const prize = { id: randomUUID(), coinMint: config.MEMECOIN_MINT, mint: d.opened.nft_address, name: meta.name ?? card?.name ?? 'Pokémon collectible', image: typeof image === 'string' && image.startsWith('https://') ? image : '', value: Number.isFinite(insured) ? insured : 0, rarity: d.opened.rarity ?? 'Unrated', purchaseSignature: d.paymentSignature, purchaseId: id, purchaseMemo: d.memo };
+        const prize = { id: randomUUID(), coinMint: config.MEMECOIN_MINT, mint: d.opened.nft_address, name: meta.name ?? card?.name ?? 'Pokémon collectible', image: typeof image === 'string' && image.startsWith('https://') ? image : '', value: Number.isFinite(insured) && insured >= 0 ? insured : 0, insuredValue: Number.isFinite(insured) && insured >= 0 ? insured : null, rarity: d.opened.rarity ?? 'Unrated', purchaseSignature: d.paymentSignature, purchaseId: id, purchaseMemo: d.memo };
         await this.jobs.db.query("INSERT INTO prizes(id,mint,data,status) VALUES($1,$2,$3,'available') ON CONFLICT(mint) DO NOTHING", [prize.id, prize.mint, JSON.stringify(prize)]);
         const stored = (await this.jobs.db.query('SELECT data FROM prizes WHERE mint=$1', [prize.mint])).rows[0].data;
         // Mint uniqueness is a custody invariant, not permission to attach an

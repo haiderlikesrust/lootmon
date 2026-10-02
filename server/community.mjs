@@ -48,6 +48,7 @@ export class Community {
     this.game = game; this.onChange = onChange;
     this.chat = []; this.activity = []; this.rates = new Map();
     this.announcedWins = new Set();
+    this.announcedPacks = new Set();
     this.runId = randomUUID(); this.sequence = 0;
     this.leaderboardCache = buildLeaderboard(game);
     this.leaderboardDirty = false;
@@ -95,6 +96,20 @@ export class Community {
     this.appendChat({ id, kind: 'bot', name: 'Looter', text: `${name} won ${tier ? `a $${tier} pack` : 'a collectible'}. Wallet transfer confirmed. TX: ${signature}`, time, signature });
     this.appendActivity({ id, kind: 'win', name, tier, time, signature });
     if (broadcast) this.changed();
+  }
+  packEvent(event, time = Date.now()) {
+    if (!['opening', 'opened'].includes(event.kind) || typeof event.id !== 'string' || ![25,50,100,250,500].includes(event.tier)) return;
+    const id = `pack:${event.kind}:${event.id}`;
+    if (this.announcedPacks.has(id)) return;
+    this.announcedPacks.add(id);
+    if (this.announcedPacks.size > 1000) this.announcedPacks.delete(this.announcedPacks.values().next().value);
+    const insuredValue = typeof event.insuredValue === 'number' && Number.isFinite(event.insuredValue) && event.insuredValue >= 0 ? event.insuredValue : null;
+    const card = clean(event.name).slice(0, 100) || 'Collectible';
+    const value = insuredValue === null ? 'insured value unavailable' : `insured value $${insuredValue.toFixed(2)}`;
+    const text = event.kind === 'opening' ? `Opening a $${event.tier} pack…` : `Opened a $${event.tier} pack: ${card} — ${value} (provider-reported). Ready for a hiding place!`;
+    this.appendChat({ id, kind: 'bot', name: 'Looter', text, time });
+    this.appendActivity({ id, kind: event.kind, name: 'Looter', tier: event.tier, time, text, insuredValue });
+    this.changed();
   }
   submit(wallet, raw, now = Date.now()) {
     const player = this.game.players.get(wallet);

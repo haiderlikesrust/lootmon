@@ -56,7 +56,7 @@ For a public deployment, keep secrets in server runtime configuration and put th
 - Play requires **at least 0.25%** of the configured coin's supply. Wallet signatures and confirmed holdings are verified by the server.
 - Special tools require **strictly more than 2%**. Pulse scan and Quickstep have server-enforced durations and cooldowns.
 - Pack tiers are **$25, $50, $100, $250, and $500**, subject to verified provider inventory. Their prices are acquisition costs, not promised collectible resale values.
-- The planner selects ten-minute or hourly cadence from current realized fee flow and available funds. It protects outstanding obligations and reserves, caps spending, and applies premium-tier cooldowns.
+- The worker refills from confirmed treasury balance every 15 seconds, including direct deposits. It pauses at five outstanding packs (including purchases in progress), protects existing payment reservations and SOL gas, and retains daily/cycle spending limits and premium-tier cooldowns.
 - Homes use server-random, separated pads in the southern collector camp, with up to 64 hunters. Assignments persist through reconnects unless a pad is occupied. Each hiding place must be reachable from every pad; route-distance bounds limit base advantages. Common packs use house interiors and woodland cover. Premium packs use guarded chambers, and $500 packs require an across-river route.
 - New drops avoid nearby hunters, active packs, and recently used spots. Bought inventory waits in a durable queue if no safe hiding place is available. Hidden locations require line of sight to discover, unless a timed radar is active.
 - A funded pack enters the world only after purchase settlement and treasury custody verification. Its pickup, theft, and base delivery are controlled by the server.
@@ -78,6 +78,14 @@ Desktop controls: **WASD / arrow keys** move, **Shift** sprints, **Space** jumps
 Use [the Dokploy guide](docs/DOKPLOY.md) and `compose.dokploy.yaml` for the same hosting arrangement as Grailshot: an Nginx gateway on `dokploy-network`, a private continuous game server, and PostgreSQL 17 with persistent storage. The Node server serves both the built frontend and WebSockets, so this app needs no separate frontend service. Route **lootmon.xyz** to **gateway, container port 8080**. The production stack publishes no host ports.
 
 In Dokploy’s Environment editor, paste `deploy/dokploy.env.example`. Set `MEMECOIN_MINT` for both the holder gate and the public, copyable contract address; set `X_ACCOUNT_URL` for the footer’s X link. Change these server runtime settings and redeploy; no frontend build variables are needed. `POSTGRES_PASSWORD` replaces `DATABASE_URL` in this template because Compose constructs the private database URL.
+
+### Switching CAs in the same deployment
+
+Change only `MEMECOIN_MINT` and redeploy to select a different coin profile. Keep the same database and game-data volume. One CA is active at a time: accounts, bases, collections, leaderboard, hidden packs, fee history and provider jobs are isolated by CA. Returning to a previous CA restores its world. Sessions and chat reset on restart. No additional environment variable is needed, and real purchases still require `MAINNET_ENABLED=true` and the existing funding conditions.
+
+Existing provider tables are automatically registered to their original stored CA; existing world data is moved to that CA's directory using the database identity, even if the newly configured CA is different. Unidentified legacy prizes fail closed rather than being assigned to a guessed CA. A profile's treasury wallet cannot be silently replaced. Keep both persistent volumes together in backups.
+
+Finish pending purchases, fee conversions and award transfers before switching. Startup rejects a switch with unresolved operations and reports the original CA to restore. Fully purchased, unclaimed packs can remain paused in the original world. Inactive worlds do not perform recovery or award transfers. Treasury token balances are shared physical wallet assets, while fee and purchase records remain separate; the wallet's daily spending cap spans all its CA profiles. CA separation does not identify which coin produced a direct wallet deposit or fees from a shared creator vault; collected fees belong to the active profile's verified claim cycle.
 
 ## Standalone container deployment
 
