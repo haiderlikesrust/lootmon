@@ -5,7 +5,7 @@ import { createDropWorker } from '../server/drop-worker.mjs';
 import { eligible } from '../server/integrations/rules.mjs';
 import { configure, config } from '../server/integrations/config.mjs';
 import { Chain, validateRefundEvidence } from '../server/integrations/chain.mjs';
-import { Providers } from '../server/integrations/providers.mjs';
+import { Providers, insuredValueFor } from '../server/integrations/providers.mjs';
 import { PendingOperation, ReviewRequired, PurchaseRefunded } from '../server/integrations/jobs.mjs';
 import { beginRecoveryAttempt, finishRecoveryAttempt, recoveryDue } from '../server/integrations/recovery.mjs';
 import { Game } from '../server/game.mjs';
@@ -13,6 +13,14 @@ import bs58 from 'bs58';
 import { validatePackPayment } from '../server/integrations/pack-policy.mjs';
 import { Keypair, PublicKey, TransactionMessage, VersionedTransaction, TransactionInstruction, SystemProgram } from '@solana/web3.js';
 import { createTransferCheckedInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, MintLayout, MINT_SIZE } from '@solana/spl-token';
+
+test('insured value distinguishes unavailable data from a reported zero', () => {
+  assert.equal(insuredValueFor({}, {}), null);
+  for (const value of [null, '', false, -1, 'not valued', Infinity]) assert.equal(insuredValueFor({ send: { insured_value: value } }, {}), null);
+  assert.equal(insuredValueFor({ send: { insured_value: 0 } }, {}), 0);
+  assert.equal(insuredValueFor({ send: { insured_value: '68.50' } }, {}), 68.5);
+  assert.equal(insuredValueFor({}, { attributes: [{ trait_type: 'insured_value', value: '42' }] }), 42);
+});
 
 test('missing configuration returns an offline adapter and no prizes or fabricated accounting', async () => {
   const provider = await createProvider({ env: {} });
