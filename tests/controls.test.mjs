@@ -274,6 +274,7 @@ test('server-disclosed radar packs render despite clock skew and disappear with 
   f.game.setState(state); f.game.setPlaying('verified-player'); f.frame();
   const pack = f.game.packMeshes.get('funded-pack');
   assert.ok(pack?.visible, 'Allowed server discovery cannot be hidden by local clock skew');
+  assert.ok(pack.getObjectByName('DiscoveryPointer')?.visible, 'A disclosed pack has a clear overhead indicator');
   let resources = 0, disposed = 0;
   pack.traverse(object => { if (object instanceof THREE.Mesh) {
     for (const resource of [object.geometry, ...(Array.isArray(object.material) ? object.material : [object.material])]) { resources++; resource.addEventListener('dispose', () => disposed++); }

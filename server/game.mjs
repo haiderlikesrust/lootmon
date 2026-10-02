@@ -138,7 +138,7 @@ export class Game {
       x, z, difficulty, spawnSite: position.id, status: 'hidden', carrierId: null, protectedUntil: 0,
     });
     this.spawnHistory[position.id] = now;
-    this.addEvent(`A funded $${prize.tierUsd} pack has been hidden in the world.`, now);
+    this.addEvent(`A funded $${prize.tierUsd} pack has been hidden in the world.`, now, { kind: 'spawned', tier: prize.tierUsd, prizeId: prize.id });
     return true;
   }
   retryPendingSpawns(now) {

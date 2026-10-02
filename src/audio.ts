@@ -1,5 +1,5 @@
 /** Original, procedural adventure-game effects. No samples, music or autoplay. */
-type SoundKind = 'click' | 'pickup' | 'steal' | 'deliver' | 'ability' | 'denied' | 'step';
+type SoundKind = 'click' | 'pickup' | 'steal' | 'deliver' | 'ability' | 'denied' | 'step' | 'discover';
 type AudioGlobals = typeof globalThis & { webkitAudioContext?: typeof AudioContext };
 
 const PREFERENCE_KEY = 'cards-audio';
@@ -161,6 +161,12 @@ export class GameAudio {
       }
       this.noise(ctx, at, 0.115, 0.045, 4700, 6600);
       this.tone(ctx, at + 0.14, note(88), 0.26, 0.028, 'sine');
+    });
+  }
+  discover() {
+    this.play('discover', 2, (ctx, at) => {
+      this.tone(ctx, at, note(81), .22, .07, 'sine');
+      this.tone(ctx, at + .12, note(88), .3, .06, 'sine');
     });
   }
 

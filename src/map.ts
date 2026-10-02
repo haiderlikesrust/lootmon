@@ -17,6 +17,7 @@ export type IslandMapOptions = {
   landmarks: readonly MapLandmark[];
   players: readonly MapPlayer[];
   myId: string | null;
+  packs?: readonly { id:string; x:number; z:number; tier:number; status:string }[];
   explorer?: { x: number; z: number; yaw?: number } | null;
   explorerCamp?: { x: number; z: number } | null;
   localPosition?: { x: number; z: number; yaw?: number } | null;
@@ -177,6 +178,18 @@ export function drawIslandMap(canvas: HTMLCanvasElement, options: IslandMapOptio
     ctx.fillText(district?.subtitle ?? 'Valley landmark', labelX + 42 * u, centerY + 10 * u);
   }
 
+  // These are only the packs already disclosed to this viewer by the server.
+  // Never derive active locations from the authored hiding-spot catalog.
+  if (me) for (const pack of options.packs ?? []) {
+    if (pack.status !== 'hidden' || !Number.isFinite(pack.x) || !Number.isFinite(pack.z)) continue;
+    const x = px(pack.x), y = pz(pack.z), radius = (small ? 16 : 11) * u;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4);
+    ctx.fillStyle = '#ffe16b'; ctx.strokeStyle = '#17395a'; ctx.lineWidth = 3 * u;
+    ctx.fillRect(-radius / 2, -radius / 2, radius, radius); ctx.strokeRect(-radius / 2, -radius / 2, radius, radius); ctx.restore();
+    ctx.font = font(small ? 20 : 13, 800); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.lineWidth = 4 * u; ctx.strokeStyle = '#17395a'; ctx.strokeText(`$${pack.tier}`, x, y - radius);
+    ctx.fillStyle = '#fff5ba'; ctx.fillText(`$${pack.tier}`, x, y - radius);
+  }
   for (const player of players) {
     if (player.id === myId) continue;
     const x = px(player.x), y = pz(player.z);

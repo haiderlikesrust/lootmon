@@ -77,6 +77,10 @@ export class Community {
     if (!details) return;
     if (['profile', 'deposit', 'win'].includes(details.kind)) this.leaderboardDirty = true;
     if (details.kind === 'profile') return;
+    if (details.kind === 'spawned') {
+      this.packEvent({ kind: 'spawned', id: details.prizeId, tier: details.tier }, event.time);
+      return;
+    }
     if (details.kind === 'win') {
       const reward = this.game.accounts[details.wallet]?.collection?.find(item => item.id === details.awardId);
       if (validReward(reward) && isConfirmed(reward)) this.recordWin(details.wallet, reward);
@@ -98,7 +102,7 @@ export class Community {
     if (broadcast) this.changed();
   }
   packEvent(event, time = Date.now()) {
-    if (!['opening', 'opened'].includes(event.kind) || typeof event.id !== 'string' || ![25,50,100,250,500].includes(event.tier)) return;
+    if (!['opening', 'opened', 'spawned'].includes(event.kind) || typeof event.id !== 'string' || ![25,50,100,250,500].includes(event.tier)) return;
     const id = `pack:${event.kind}:${event.id}`;
     if (this.announcedPacks.has(id)) return;
     this.announcedPacks.add(id);
@@ -106,7 +110,9 @@ export class Community {
     const insuredValue = typeof event.insuredValue === 'number' && Number.isFinite(event.insuredValue) && event.insuredValue >= 0 ? event.insuredValue : null;
     const card = clean(event.name).slice(0, 100) || 'Collectible';
     const value = insuredValue === null ? 'insured value unavailable' : `insured value $${insuredValue.toFixed(2)}`;
-    const text = event.kind === 'opening' ? `Opening a $${event.tier} pack…` : `Opened a $${event.tier} pack: ${card} — ${value} (provider-reported). Ready for a hiding place!`;
+    const text = event.kind === 'opening' ? `Opening a $${event.tier} pack…` : event.kind === 'spawned'
+      ? `A $${event.tier} pack is now hidden on the island! Search inside houses and along the trails. Discovered packs glow and appear on your map.`
+      : `Opened a $${event.tier} pack: ${card} — ${value} (provider-reported). Custody verified; preparing the island drop.`;
     this.appendChat({ id, kind: 'bot', name: 'Looter', text, time });
     this.appendActivity({ id, kind: event.kind, name: 'Looter', tier: event.tier, time, text, insuredValue });
     this.changed();
