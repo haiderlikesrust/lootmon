@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createProvider } from '../server/provider.mjs';
 import { createDropWorker } from '../server/drop-worker.mjs';
 import { eligible } from '../server/integrations/rules.mjs';
-import { configure } from '../server/integrations/config.mjs';
+import { configure, config } from '../server/integrations/config.mjs';
 import { Chain, validateRefundEvidence } from '../server/integrations/chain.mjs';
 import { Providers } from '../server/integrations/providers.mjs';
 import { PendingOperation, ReviewRequired, PurchaseRefunded } from '../server/integrations/jobs.mjs';
@@ -12,7 +12,7 @@ import { Game } from '../server/game.mjs';
 import bs58 from 'bs58';
 import { validatePackPayment } from '../server/integrations/pack-policy.mjs';
 import { Keypair, PublicKey, TransactionMessage, VersionedTransaction, TransactionInstruction, SystemProgram } from '@solana/web3.js';
-import { createTransferCheckedInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { createTransferCheckedInstruction, getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, MintLayout, MINT_SIZE } from '@solana/spl-token';
 
 test('missing configuration returns an offline adapter and no prizes or fabricated accounting', async () => {
   const provider = await createProvider({ env: {} });
@@ -141,6 +141,92 @@ test('transaction execution persists a signature before broadcast and recovers i
   assert.equal(broadcasts, 1);
   assert.equal(builds, 1);
   configure({});
+});
+
+test('expired signed transactions retain the same identity when a lagging or pruned RPC returns no history', async () => {
+  configure({ MAINNET_ENABLED: 'true', SOLANA_RPC_URL: 'https://example.invalid' });
+  try {
+    const entries = new Map(), signer = Keypair.generate();
+    const jobs = {
+      async get(id) { return entries.get(id); },
+      async put(id, kind, status, data) { entries.set(id, { id, kind, status, data: structuredClone(data), updated_at: Date.now() }); },
+    };
+    let expired = false, confirmed = false, broadcasts = 0, builds = 0;
+    const rpc = {
+      async getSignatureStatuses() { return { value: [confirmed ? { err: null, confirmationStatus: 'confirmed' } : null] }; },
+      async isBlockhashValid() { return { value: !expired }; },
+      async getTransaction() { return null; },
+      async sendRawTransaction() { broadcasts++; },
+    };
+    const makeChain = () => { const chain = new Chain(jobs); chain.signer = signer; chain.connection = rpc; return chain; };
+    const build = async () => {
+      builds++;
+      return new VersionedTransaction(new TransactionMessage({ payerKey: signer.publicKey,
+        recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions: [] }).compileToV0Message());
+    };
+    await assert.rejects(makeChain().execute('signed-payment', 'pack-payment', build, {}), PendingOperation);
+    const signed = structuredClone(entries.get('signed-payment').data);
+    expired = true;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await assert.rejects(makeChain().execute('signed-payment', 'pack-payment', build, {}), error => error instanceof PendingOperation && error.code === 'payment_ambiguous');
+      assert.deepEqual(entries.get('signed-payment').data, signed);
+    }
+    const unresolved = structuredClone(entries.get('signed-payment'));
+    entries.set('signed-payment', { ...unresolved, status: 'retryable', data: { attempts: [{ signature: signed.signature, error: 'Old software treated missing history as failure' }] } });
+    await assert.rejects(makeChain().execute('signed-payment', 'pack-payment', build, {}), error => error.code === 'payment_ambiguous');
+    assert.equal(builds, 1, 'Legacy archives without final failure proof also cannot authorize another payment');
+    entries.set('signed-payment', unresolved);
+    // Old software may have already labeled an unknown expired signature retryable.
+    // Its retained signed bytes still cannot be replaced without failure evidence.
+    Object.assign(entries.get('signed-payment'), { status: 'failed', updated_at: Date.now() - 60_000 });
+    entries.get('signed-payment').data.automaticRetry = true;
+    await assert.rejects(makeChain().execute('signed-payment', 'pack-payment', build, {}), error => error.code === 'payment_ambiguous');
+    assert.equal(builds, 1);
+    assert.equal(broadcasts, 1);
+    assert.equal(entries.get('signed-payment').data.raw, signed.raw);
+    confirmed = true;
+    assert.equal(await makeChain().execute('signed-payment', 'pack-payment', build, {}), signed.signature);
+    assert.equal(builds, 1);
+    assert.equal(broadcasts, 1);
+  } finally { configure({}); }
+});
+
+test('a replacement signed transaction is allowed only after the original on-chain failure is finalized', async () => {
+  configure({ MAINNET_ENABLED: 'true', SOLANA_RPC_URL: 'https://example.invalid' });
+  try {
+    const entries = new Map(), signer = Keypair.generate();
+    const jobs = {
+      async get(id) { return entries.get(id); },
+      async put(id, kind, status, data) { entries.set(id, { id, kind, status, data: structuredClone(data), updated_at: Date.now() }); },
+    };
+    let oldSignature, failed = false, finalized = false, builds = 0, broadcasts = 0;
+    const rpc = {
+      async getSignatureStatuses([signature]) { return { value: [signature === oldSignature && failed
+        ? { err: { InstructionError: [0, 'Custom'] }, confirmationStatus: finalized ? 'finalized' : 'confirmed' } : null] }; },
+      async isBlockhashValid() { return { value: true }; },
+      async sendRawTransaction() { broadcasts++; },
+    };
+    const chain = new Chain(jobs); chain.signer = signer; chain.connection = rpc;
+    const build = async () => {
+      builds++;
+      return new VersionedTransaction(new TransactionMessage({ payerKey: signer.publicKey,
+        recentBlockhash: Keypair.generate().publicKey.toBase58(), instructions: [] }).compileToV0Message());
+    };
+    await assert.rejects(chain.execute('failed-payment', 'pack-payment', build, {}), PendingOperation);
+    oldSignature = entries.get('failed-payment').data.signature;
+    failed = true;
+    await assert.rejects(chain.execute('failed-payment', 'pack-payment', build, {}), PendingOperation);
+    entries.get('failed-payment').updated_at = Date.now() - 60_000;
+    await assert.rejects(chain.execute('failed-payment', 'pack-payment', build, {}), /finalize/);
+    assert.equal(builds, 1);
+    finalized = true;
+    await assert.rejects(chain.execute('failed-payment', 'pack-payment', build, {}), PendingOperation);
+    assert.equal(builds, 2);
+    assert.equal(broadcasts, 2);
+    assert.notEqual(entries.get('failed-payment').data.signature, oldSignature);
+    assert.equal(entries.get('failed-payment').data.attempts[0].signature, oldSignature);
+    assert.equal(entries.get('failed-payment').data.attempts[0].finalizedFailure, true);
+  } finally { configure({}); }
 });
 
 test('provider reserves available tiers before purchase, waits for custody, replays inventory, and pins recoverable awards', async () => {
@@ -478,4 +564,106 @@ test('delivery retry deadlines, reasons and quarantine survive game restart with
   restarted.markAward('prize', { status: 'quarantined', reason: 'Unsafe intent.', code: 'intent_quarantined' });
   assert.equal(new Game({ now: 99999, store }).pendingAwards().length, 0);
   assert.equal(saved.accounts.winner.collection[0].status, 'delivery_quarantined');
+});
+
+test('purchase recovery cannot attach an existing collectible to another payment, order, or memo', async () => {
+  const coin = Keypair.generate().publicKey.toBase58(), mint = Keypair.generate().publicKey.toBase58();
+  configure({ MEMECOIN_MINT: coin });
+  try {
+    const entries = new Map([
+      ['pack:new-order', { status: 'verifying', data: { tier: 25, funded: true, memo: 'new-memo', paymentSignature: 'new-payment',
+        opened: { nft_address: mint, nftWon: { metadata: { name: 'Fixture', image: 'https://example.invalid/card.webp' } } } } }],
+      ['pack:new-order:payment', { status: 'confirmed', data: { signature: 'new-payment' } }],
+    ]);
+    const existing = { id: 'original-prize', mint, coinMint: coin, purchaseSignature: 'old-payment',
+      purchaseId: 'pack:old-order', purchaseMemo: 'old-memo', tierUsd: 500, value: 25 };
+    const jobs = {
+      get: async id => structuredClone(entries.get(id)),
+      put: async (id, kind, status, data) => { entries.set(id, { kind, status, data: structuredClone(data) }); },
+      db: { async query(sql) {
+        if (sql.startsWith('INSERT INTO ledger') || sql.startsWith('INSERT INTO prizes')) return { rows: [] };
+        assert.equal(sql, 'SELECT data FROM prizes WHERE mint=$1');
+        return { rows: [{ data: structuredClone(existing) }] };
+      } },
+    };
+    const provider = new Providers({ ownsNft: async () => true }, jobs);
+    provider.cc = async path => { assert.equal(path, '/pack/status?memo=new-memo'); return { pack: {}, send: { insured_value: 25 } }; };
+    for (const update of [{}, { purchaseSignature: 'new-payment' }, { purchaseId: 'pack:new-order' }]) {
+      Object.assign(existing, update);
+      await assert.rejects(provider.purchase('new-order', 25, {}), ReviewRequired);
+      assert.equal(entries.get('pack:new-order').status, 'verifying');
+      assert.equal(existing.tierUsd, 500, 'The existing collectible classification must stay unchanged');
+    }
+    existing.purchaseMemo = 'new-memo';
+    const recovered = await provider.purchase('new-order', 25, {});
+    assert.equal(recovered.id, 'original-prize', 'Same-order crash recovery reuses the existing durable identity');
+    assert.equal(entries.get('pack:new-order').status, 'complete');
+    assert.equal((await provider.purchase('new-order', 25, {})).id, 'original-prize');
+  } finally { configure({}); }
+});
+
+test('one raw fungible token is not accepted as NFT custody', async () => {
+  configure({ MAINNET_ENABLED: 'true', SOLANA_RPC_URL: 'https://example.invalid' });
+  try {
+    const signer = Keypair.generate(), mint = Keypair.generate().publicKey;
+    let mintState = { mintAuthorityOption: 0, mintAuthority: PublicKey.default, supply: 1n,
+      decimals: 0, isInitialized: true, freezeAuthorityOption: 0, freezeAuthority: PublicKey.default };
+    let owner = TOKEN_PROGRAM_ID, balance = '1';
+    const chain = new Chain({}); chain.signer = signer;
+    chain.connection = {
+      async getAccountInfo() {
+        const data = Buffer.alloc(MINT_SIZE); MintLayout.encode(mintState, data);
+        return { data, owner, lamports: 1, executable: false, rentEpoch: 0 };
+      },
+      async getParsedTokenAccountsByOwner() { return { value: [{ account: { data: { parsed: { info: { tokenAmount: { amount: balance } } } } } }] }; },
+    };
+    assert.equal(await chain.ownsNft(mint.toBase58()), true);
+    for (const state of [{ decimals: 6 }, { supply: 1_000_000n }, { isInitialized: false }]) {
+      const valid = mintState; mintState = { ...valid, ...state };
+      await assert.rejects(chain.ownsNft(mint.toBase58()), ReviewRequired);
+      mintState = valid;
+    }
+    owner = SystemProgram.programId;
+    await assert.rejects(chain.ownsNft(mint.toBase58()), ReviewRequired);
+    owner = TOKEN_PROGRAM_ID; balance = '0';
+    assert.equal(await chain.ownsNft(mint.toBase58()), false);
+  } finally { configure({}); }
+});
+
+test('fee accounting rejects mismatched or stale valuation quotes before crediting earned allocation', async () => {
+  const signer = Keypair.generate(), coin = Keypair.generate().publicKey.toBase58();
+  configure({ MEMECOIN_MINT: coin });
+  config.FEE_RECIPIENT = signer.publicKey.toBase58();
+  const originalNow = Date.now;
+  try {
+    const cycle = { id: 'fees:fixture', kind: 'fee-cycle', status: 'accounting', created_at: 1000,
+      data: { quoteMint: config.CARDS_MINT, creator: signer.publicKey.toBase58(), claimSignature: 'confirmed-fees', amount: '1234', cardsAmount: '1234' } };
+    const ledger = new Map();
+    let completed = 0;
+    const jobs = {
+      async put(id, kind, status) { assert.equal(status, 'complete'); completed++; },
+      db: { async query(sql, args) {
+        if (sql.startsWith('SELECT')) return { rows: [structuredClone(cycle)] };
+        assert.match(sql, /^INSERT INTO ledger/);
+        ledger.set(args[0], { amount: args[1], signature: args[2] }); return { rows: [] };
+      } },
+    };
+    const provider = new Providers({ address: signer.publicKey.toBase58(), require: () => ({ rpc: {}, signer }) }, jobs);
+    const valid = { inputMint: config.CARDS_MINT, outputMint: config.USDC_MINT, inAmount: '1234', outAmount: '25000000' };
+    for (const changed of [{ inputMint: coin }, { outputMint: coin }, { inAmount: '1235' }, { outAmount: '-1' }, { outAmount: '0' }]) {
+      provider.quote = async () => ({ ...valid, ...changed });
+      await assert.rejects(provider.collectFees({}), ReviewRequired);
+      assert.equal(ledger.size, 0);
+      assert.equal(completed, 0);
+    }
+    const baseTime = originalNow(); Date.now = () => baseTime;
+    provider.quote = async () => { Date.now = () => baseTime + 11_000; return valid; };
+    await assert.rejects(provider.collectFees({}), /current valuation/);
+    assert.equal(ledger.size, 0);
+    Date.now = originalNow;
+    provider.quote = async () => valid;
+    await provider.collectFees({});
+    assert.deepEqual(ledger.get('fees:fixture'), { amount: '25000000', signature: 'confirmed-fees' });
+    assert.equal(completed, 1);
+  } finally { Date.now = originalNow; configure({}); }
 });

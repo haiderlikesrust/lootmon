@@ -1,6 +1,6 @@
 // Adapted from the user-owned grailshot reference project. No runtime configuration was copied.
 import { Connection, PublicKey, TransactionMessage, VersionedTransaction, TransactionInstruction, ComputeBudgetProgram } from '@solana/web3.js';
-import { AccountLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { AccountLayout, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, NATIVE_MINT, getAssociatedTokenAddressSync, unpackMint } from '@solana/spl-token';
 import bs58 from 'bs58';
 import { config } from './config.mjs';
 import { eligible } from './rules.mjs';
@@ -181,6 +181,11 @@ export class Chain {
                 throw new PendingOperation('Waiting for the previous transaction to settle.');
         }
         if (!job?.data.raw) {
+            // Older versions could discard an expired signed attempt merely
+            // because RPC history was empty. Its archived signature remains a
+            // possible payment; never silently rebuild those legacy records.
+            if (job?.data.attempts?.some(attempt => attempt.signature && attempt.finalizedFailure !== true))
+                throw new PendingOperation('An earlier signed attempt has no final failure proof; retaining the reserved intent.', 'payment_ambiguous');
             const tx = await build();
             if (policy.kind !== 'internal')
                 await this.validateExternal(tx, policy, settings);
@@ -209,10 +214,14 @@ export class Chain {
                 await this.jobs.put(id, kind, 'confirmed', data);
                 return data.signature;
             }
-            if (landed && !landed.meta)
-                throw new PendingOperation('Waiting for complete transaction history.');
-            await this.jobs.put(id, kind, 'failed', { ...data, automaticRetry: true }, 'Blockhash expired; chain history has no successful transaction.');
-            throw new PendingOperation('Transaction expired; automatic recovery is scheduled.');
+            if (landed?.meta?.err) {
+                await this.jobs.put(id, kind, 'failed', { ...data, automaticRetry: true }, JSON.stringify(landed.meta.err));
+                throw new PendingOperation('Waiting for the failed transaction to finalize before retrying.');
+            }
+            // Null history is not proof of non-execution: an RPC can lag or
+            // prune a transaction that already spent funds. Keep the original
+            // signed identity indefinitely until settlement evidence arrives.
+            throw new PendingOperation('Signed transaction settlement is unknown; retaining the original payment.', 'payment_ambiguous');
         }
         if (!status)
             await rpc.sendRawTransaction(Buffer.from(data.raw, 'base64'), { skipPreflight: false, maxRetries: 2 });
@@ -226,8 +235,8 @@ export class Chain {
         if (job.data.signature) {
             const { rpc } = this.require();
             const status = (await rpc.getSignatureStatuses([job.data.signature], { searchTransactionHistory: true })).value[0];
-            if (status?.err && !['confirmed', 'finalized'].includes(status.confirmationStatus ?? ''))
-                throw new PendingOperation('Waiting for the failed transaction to reach confirmation.');
+            if (status?.err && status.confirmationStatus !== 'finalized')
+                throw new PendingOperation('Waiting for the failed transaction to finalize before retrying.');
             if (status && !status.err) {
                 if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
                     await this.jobs.put(id, job.kind, 'confirmed', job.data);
@@ -235,15 +244,17 @@ export class Chain {
             }
             if (!status && (await rpc.isBlockhashValid(job.data.blockhash, { commitment: 'confirmed' })).value)
                 throw new PendingOperation('Transaction is still valid; reconciliation must finish first.');
-            const landed = await rpc.getTransaction(job.data.signature, { maxSupportedTransactionVersion: 0, commitment: 'confirmed' });
-            if (landed && !landed.meta)
-                throw new PendingOperation('Waiting for complete transaction history.');
-            if (landed?.meta && !landed.meta.err) {
-                await this.jobs.put(id, job.kind, 'confirmed', job.data);
-                return;
+            if (!status?.err) {
+                const landed = await rpc.getTransaction(job.data.signature, { maxSupportedTransactionVersion: 0, commitment: 'finalized' });
+                if (!landed?.meta)
+                    throw new PendingOperation('Signed transaction settlement is unknown; retaining the original payment.', 'payment_ambiguous');
+                if (!landed.meta.err) {
+                    await this.jobs.put(id, job.kind, 'confirmed', job.data);
+                    return;
+                }
             }
         }
-        await this.jobs.put(id, job.kind, 'retryable', { attempts: [...(job.data.attempts ?? []), { signature: job.data.signature, error: job.error }], ...Object.fromEntries(Object.entries(job.data).filter(([key]) => !['raw', 'signature', 'blockhash', 'attempts', 'automaticRetry'].includes(key))) });
+        await this.jobs.put(id, job.kind, 'retryable', { attempts: [...(job.data.attempts ?? []), { signature: job.data.signature, error: job.error, finalizedFailure: Boolean(job.data.signature) }], ...Object.fromEntries(Object.entries(job.data).filter(([key]) => !['raw', 'signature', 'blockhash', 'attempts', 'automaticRetry'].includes(key))) });
     }
     async ownsNft(mint, wallet = this.address) {
         const { rpc } = this.require();
@@ -256,6 +267,13 @@ export class Chain {
             const asset = await fetchAsset(createUmi(config.SOLANA_RPC_URL), mint);
             return asset.owner === wallet;
         }
+        if (!account.owner.equals(TOKEN_PROGRAM_ID) && !account.owner.equals(TOKEN_2022_PROGRAM_ID))
+            throw new ReviewRequired('Collectible is not owned by a supported NFT token program.');
+        let tokenMint;
+        try { tokenMint = unpackMint(new PublicKey(mint), account, account.owner); }
+        catch { throw new ReviewRequired('Collectible has invalid mint account data.'); }
+        if (!tokenMint.isInitialized || tokenMint.decimals !== 0 || tokenMint.supply !== 1n)
+            throw new ReviewRequired('Collectible must have a unique indivisible NFT supply.');
         return (await this.balance(mint, wallet)) === 1n;
     }
     async transferNft(id, mint, winner, settings) {

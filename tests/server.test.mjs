@@ -74,13 +74,13 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
       headers: { Origin: originHeader, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
-    const authenticate = async wallet => {
-      const challengeResponse = await request('/api/auth/challenge', { body: { wallet: wallet.address } });
+    const authenticate = async (wallet, previousCookie) => {
+      const challengeResponse = await request('/api/auth/challenge', { body: { wallet: wallet.address }, cookie: previousCookie });
       assert.equal(challengeResponse.status, 200);
       const challenge = await challengeResponse.json();
       assert.match(challenge.message, /does not submit a transaction/);
       const proof = { wallet: wallet.address, nonce: challenge.nonce, signature: sign(null, Buffer.from(challenge.message), wallet.key.privateKey).toString('base64') };
-      const response = await request('/api/auth/verify', { body: proof });
+      const response = await request('/api/auth/verify', { body: proof, cookie: previousCookie });
       return { response, proof, cookie: response.headers.get('set-cookie')?.split(';')[0], payload: await response.json() };
     };
     const snapshot = await (await request('/api/status')).json();
@@ -102,6 +102,10 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
       socket.on('error', () => {});
     });
     assert.equal(unauthenticatedStatus, 401);
+    for (const body of [null, [], 'wallet']) {
+      const response = await fetch(`${origin}/api/auth/challenge`, { method: 'POST', headers: { Origin: 'http://localhost:5173', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      assert.equal(response.status, 400, 'non-object JSON is rejected as a client error');
+    }
     assert.equal((await request('/api/auth/challenge', { body: { wallet: alice.address }, originHeader: 'https://untrusted.invalid' })).status, 403);
     const low = await authenticate(ineligible);
     assert.equal(low.response.status, 403);
@@ -121,7 +125,7 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
     assert.deepEqual(session.collection, []);
     assert.deepEqual((await (await request('/api/collection', { cookie: first.cookie })).json()).collection, []);
 
-    function connect(cookie, name, character) {
+    function connect(cookie, name, character, { autoJoin = true } = {}) {
       const socket = new WebSocket(origin.replace('http:', 'ws:') + '/ws', { headers: { Cookie: cookie, Origin: 'http://localhost:5173' } });
       sockets.push(socket);
       const messages = [];
@@ -134,7 +138,7 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
         for (const waiter of [...waiters]) if (waiter.predicate(message)) { clearTimeout(waiter.timeout); waiters.splice(waiters.indexOf(waiter), 1); waiter.resolve(message); }
       });
       socket.on('close', (code, reason) => { closed = { code, reason: reason.toString() }; });
-      socket.on('open', () => socket.send(JSON.stringify({ type: 'join', name, character })));
+      socket.on('open', () => { if (autoJoin) socket.send(JSON.stringify({ type: 'join', name, character })); });
       return {
         socket, messages, get closed() { return closed; },
         wait(predicate, timeoutMs = 5000) {
@@ -147,6 +151,25 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
         },
       };
     }
+    const sendAndWait = (client, payload, predicate) => {
+      const firstNewMessage = client.messages.length;
+      client.socket.send(JSON.stringify(payload));
+      return client.wait(message => client.messages.indexOf(message) >= firstNewMessage && predicate(message));
+    };
+    const chat = (client, text, extra = {}) => sendAndWait(client, { type: 'chat', text, ...extra }, message => message.type === 'chat_ack');
+    const assertPublicCommunity = payload => {
+      const privateFields = new Set(['packs', 'pendingSpawns', 'mint', 'purchaseSignature', 'collection', 'treasury', 'recovery', 'session', 'nonce', 'x', 'z']);
+      const visit = value => {
+        if (!value || typeof value !== 'object') return;
+        for (const [key, child] of Object.entries(value)) {
+          assert.equal(privateFields.has(key), false, `Public community leaked ${key}`);
+          visit(child);
+        }
+      };
+      visit(payload);
+      const serialized = JSON.stringify(payload);
+      for (const cookie of [first.cookie, second.cookie, boundary.cookie]) assert.equal(serialized.includes(cookie.split('=')[1]), false, 'Public community must not expose session credentials');
+    };
     const aliceSocket = connect(first.cookie, 'Alice', 'ranger');
     const aliceWelcome = await aliceSocket.wait(message => message.type === 'welcome');
     aliceSocket.socket.send(JSON.stringify({ type: 'ping', nonce: 72934 }));
@@ -166,6 +189,66 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
     assert.ok(Math.hypot(alicePlayer.base.x - bobPlayer.base.x, alicePlayer.base.z - bobPlayer.base.z) >= 10);
     assert.deepEqual(alicePlayer.collection, []);
     assert.equal(bobWelcome.state.packs.length, 0);
+
+    const publicCommunityResponse = await request('/api/community');
+    assert.equal(publicCommunityResponse.status, 200);
+    assert.equal(publicCommunityResponse.headers.get('cache-control'), 'no-store');
+    const initialCommunity = await publicCommunityResponse.json();
+    assert.ok(Array.isArray(initialCommunity.chat));
+    assert.ok(Array.isArray(initialCommunity.activity));
+    assertPublicCommunity(initialCommunity);
+    const initialLeaderboard = await (await request('/api/leaderboard')).json();
+    assert.deepEqual(initialLeaderboard.entries, [], 'Joining and holdings alone cannot manufacture secured cards or leaderboard wins');
+    assert.equal(initialLeaderboard.totalCollectors, 0);
+    assertPublicCommunity(initialLeaderboard);
+
+    const spectator = connect(boundary.cookie, 'Spectator', 'scout', { autoJoin: false });
+    const publicSocketSnapshot = await spectator.wait(message => message.type === 'community');
+    assertPublicCommunity(publicSocketSnapshot);
+    const deniedSpectator = await sendAndWait(spectator, { type: 'chat', text: 'This unjoined message must never be published' }, message => message.type === 'chat_ack' || message.type === 'error');
+    assert.notEqual(deniedSpectator.ok, true);
+    assert.match(deniedSpectator.reason ?? deniedSpectator.message, /deploy|join/i);
+
+    for (const text of [null, [], { toString: null }, '', ' \n\t\u0000 ', 'x'.repeat(241)]) {
+      const rejected = await chat(aliceSocket, text);
+      assert.equal(rejected.ok, false, 'Malformed, empty, and oversized chat text must be rejected');
+    }
+    const authoredText = 'Hello from the authenticated Alice';
+    assert.equal((await chat(aliceSocket, authoredText, {
+      kind: 'bot', wallet: bob.address, name: 'Looter', id: 'win:forged', signature: 'forged-transfer', character: 'sage',
+    })).ok, true);
+    const observedCommunity = await spectator.wait(message => message.type === 'community' && message.chat.some(post => post.text === authoredText));
+    const authoredPost = observedCommunity.chat.find(post => post.text === authoredText);
+    assert.equal(authoredPost.kind, 'player');
+    assert.equal(authoredPost.wallet, alice.address);
+    assert.equal(authoredPost.name, 'Alice');
+    assert.equal(authoredPost.character, 'ranger');
+    assert.notEqual(authoredPost.id, 'win:forged');
+    assert.equal(authoredPost.signature, undefined, 'Players cannot manufacture transaction evidence or bot identity');
+    assertPublicCommunity(observedCommunity);
+    for (let index = 0; index < 6; index++) assert.equal((await chat(aliceSocket, `Flood attempt ${index}`)).ok, false, 'Wallet chat cooldown rejects rapid distinct messages');
+    const afterRejectedMessages = await (await request('/api/community')).json();
+    assert.equal(afterRejectedMessages.chat.filter(post => post.wallet === alice.address).length, 1);
+    assert.equal(afterRejectedMessages.chat.some(post => post.text.includes('unjoined message')), false);
+    assertPublicCommunity(afterRejectedMessages);
+    const spectatorClosed = once(spectator.socket, 'close');
+    spectator.socket.close();
+    await spectatorClosed;
+
+    const malformedNameSocket = connect(boundary.cookie, { toString: null }, 'scout');
+    const sanitizedWelcome = await malformedNameSocket.wait(message => message.type === 'welcome');
+    assert.equal(sanitizedWelcome.state.players.find(player => player.id === exactEliteBoundary.address).name, 'HUNTER');
+    assert.equal((await chat(malformedNameSocket, 'A valid message before reconnect')).ok, true);
+    const malformedClosed = once(malformedNameSocket.socket, 'close');
+    malformedNameSocket.socket.close();
+    await malformedClosed;
+    const reconnectedChat = connect(boundary.cookie, 'Returning collector', 'scout');
+    await reconnectedChat.wait(message => message.type === 'welcome');
+    assert.equal((await chat(reconnectedChat, 'Reconnect must not reset the chat cooldown')).ok, false);
+    const reconnectedClosed = once(reconnectedChat.socket, 'close');
+    reconnectedChat.socket.close();
+    await reconnectedClosed;
+    assert.equal((await request('/api/ping')).status, 200, 'hostile join payload cannot crash the authority');
     aliceSocket.socket.send(JSON.stringify({ type: 'profile', tier: 'elite' }));
     const forgedProfile = await aliceSocket.wait(message => message.type === 'action');
     assert.equal(forgedProfile.ok, false);
@@ -187,6 +270,38 @@ test('live server verifies signed wallets, isolates players, and revokes stale p
     assert.match(deniedTool.reason, /above 2%/);
     assert.equal((await request('/api/auth/session', { cookie: first.cookie })).status, 401);
     assert.ok(rpcCalls >= 12);
+
+    // A successful fresh signature with the existing browser cookie replaces
+    // its authority. Closing that socket must not discard the new session.
+    const replacedSocketClosed = once(bobSocket.socket, 'close', { signal: AbortSignal.timeout(5000) });
+    const replacement = await authenticate(bob, second.cookie);
+    assert.equal(replacement.response.status, 200);
+    assert.notEqual(replacement.cookie, second.cookie);
+    assert.equal(replacement.payload.player.wallet, bob.address);
+    assert.equal(replacement.payload.player.elite, false);
+    const [replacementCloseCode, replacementCloseReason] = await replacedSocketClosed;
+    assert.equal(replacementCloseCode, 1000);
+    assert.match(replacementCloseReason.toString(), /session replaced/);
+    assert.equal((await request('/api/auth/session', { cookie: second.cookie })).status, 401);
+    assert.equal((await request('/api/collection', { cookie: second.cookie })).status, 401);
+    const currentSession = await request('/api/auth/session', { cookie: replacement.cookie });
+    assert.equal(currentSession.status, 200);
+    assert.equal((await currentSession.json()).player.wallet, bob.address);
+    const rejectedOldSocket = await new Promise((resolveStatus, reject) => {
+      const socket = new WebSocket(origin.replace('http:', 'ws:') + '/ws', { headers: { Cookie: second.cookie, Origin: 'http://localhost:5173' } });
+      sockets.push(socket);
+      socket.on('unexpected-response', (_request, response) => { resolveStatus(response.statusCode); socket.terminate(); });
+      socket.on('open', () => reject(new Error('Replaced session opened another websocket')));
+      socket.on('error', () => {});
+    });
+    assert.equal(rejectedOldSocket, 401);
+    const replacementSocket = connect(replacement.cookie, 'Bob returned', 'sage');
+    const replacementWelcome = await replacementSocket.wait(message => message.type === 'welcome');
+    assert.equal(replacementWelcome.id, bob.address);
+    assert.equal(replacementWelcome.state.players.length, 1);
+    assert.equal(replacementWelcome.state.players[0].name, 'Bob returned');
+    replacementSocket.socket.send(JSON.stringify({ type: 'ping', nonce: 90123 }));
+    assert.equal((await replacementSocket.wait(message => message.type === 'pong')).nonce, 90123);
   } finally {
     for (const socket of sockets) socket.terminate();
     if (child && child.exitCode === null) {

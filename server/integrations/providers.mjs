@@ -12,6 +12,15 @@ export async function jsonFetch(url, init = {}) { const response = await fetch(u
     throw new Error(body.error || body.message || `Provider returned HTTP ${response.status}`); return body; }
 const CC = 'https://gacha.collectorcrypt.com';
 const JUP = 'https://api.jup.ag/swap/v2';
+function quoteOutput(quote, inputMint, outputMint, amount, requestedAt) {
+    if (Date.now() - requestedAt > 10_000 || quote?.errorCode)
+        throw new Error('An executable current valuation is unavailable.');
+    if (quote?.inputMint !== inputMint || quote?.outputMint !== outputMint
+        || String(quote?.inAmount) !== amount.toString() || !/^\d+$/.test(String(quote?.outAmount))
+        || BigInt(quote.outAmount) <= 0n)
+        throw new ReviewRequired('Valuation asset or amount does not match the reserved intent.');
+    return BigInt(quote.outAmount);
+}
 export class Providers {
     chain;
     jobs;
@@ -145,10 +154,10 @@ export class Providers {
             d.cardsAmount = d.quoteMint === config.CARDS_MINT ? d.amount : (await this.swap(`${cycle.id}:cards`, d.quoteMint, config.CARDS_MINT, BigInt(d.amount), settings)).received.toString();
             await this.jobs.put(cycle.id, 'fee-cycle', 'accounting', d);
         }
+        const quotedAt = Date.now();
         const valuation = await this.quote(config.CARDS_MINT, config.USDC_MINT, BigInt(d.cardsAmount));
-        if (!valuation.outAmount)
-            throw new Error('Fee valuation temporarily unavailable.');
-        await this.jobs.db.query("INSERT INTO ledger(id,kind,amount_micros,signature,created_at,data) VALUES($1,'fee',$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING", [cycle.id, valuation.outAmount, d.claimSignature, Number(cycle.created_at), JSON.stringify({ cardsAmount: d.cardsAmount })]);
+        const feeValue = quoteOutput(valuation, config.CARDS_MINT, config.USDC_MINT, BigInt(d.cardsAmount), quotedAt);
+        await this.jobs.db.query("INSERT INTO ledger(id,kind,amount_micros,signature,created_at,data) VALUES($1,'fee',$2,$3,$4,$5) ON CONFLICT(id) DO NOTHING", [cycle.id, feeValue.toString(), d.claimSignature, Number(cycle.created_at), JSON.stringify({ cardsAmount: d.cardsAmount })]);
         await this.jobs.put(cycle.id, 'fee-cycle', 'complete', d);
     }
     async purchase(roundId, tier, settings) {
@@ -195,8 +204,9 @@ export class Providers {
                 const cards = await this.chain.balance(config.CARDS_MINT);
                 if (!cards)
                     throw new Error('Insufficient pack funds.');
-                const quote = await this.quote(config.CARDS_MINT, config.USDC_MINT, cards), needed = price - usdc;
-                const amount = (cards * needed * 10000n + BigInt(quote.outAmount) * (10000n - BigInt(settings.slippageBps)) - 1n) / (BigInt(quote.outAmount) * (10000n - BigInt(settings.slippageBps)));
+                const quotedAt = Date.now(), quote = await this.quote(config.CARDS_MINT, config.USDC_MINT, cards), needed = price - usdc;
+                const output = quoteOutput(quote, config.CARDS_MINT, config.USDC_MINT, cards, quotedAt);
+                const amount = (cards * needed * 10000n + output * (10000n - BigInt(settings.slippageBps)) - 1n) / (output * (10000n - BigInt(settings.slippageBps)));
                 if (amount > cards)
                     throw new Error('Pack funds changed; waiting for fees.');
                 await this.swap(`${id}:usdc`, config.CARDS_MINT, config.USDC_MINT, amount, settings, needed);
@@ -256,9 +266,18 @@ export class Providers {
             catch { /* Asset may be Core; provider metadata remains authoritative for display. */ }
         }
         const insured = Number(status.send?.insured_value ?? meta.attributes?.find((a) => /insured.?value/i.test(a.trait_type))?.value ?? 0);
-        const prize = { id: randomUUID(), coinMint: config.MEMECOIN_MINT, mint: d.opened.nft_address, name: meta.name ?? card?.name ?? 'Pokémon collectible', image: typeof image === 'string' && image.startsWith('https://') ? image : '', value: Number.isFinite(insured) ? insured : 0, rarity: d.opened.rarity ?? 'Unrated', purchaseSignature: d.paymentSignature };
+        const prize = { id: randomUUID(), coinMint: config.MEMECOIN_MINT, mint: d.opened.nft_address, name: meta.name ?? card?.name ?? 'Pokémon collectible', image: typeof image === 'string' && image.startsWith('https://') ? image : '', value: Number.isFinite(insured) ? insured : 0, rarity: d.opened.rarity ?? 'Unrated', purchaseSignature: d.paymentSignature, purchaseId: id, purchaseMemo: d.memo };
         await this.jobs.db.query("INSERT INTO prizes(id,mint,data,status) VALUES($1,$2,$3,'available') ON CONFLICT(mint) DO NOTHING", [prize.id, prize.mint, JSON.stringify(prize)]);
         const stored = (await this.jobs.db.query('SELECT data FROM prizes WHERE mint=$1', [prize.mint])).rows[0].data;
+        // Mint uniqueness is a custody invariant, not permission to attach an
+        // existing collectible to a different paid order. Same-order recovery
+        // may reuse the persisted row; a provider returning a duplicate asset
+        // must never overwrite that asset's tier or create a second award.
+        if (stored.mint !== prize.mint || stored.coinMint !== config.MEMECOIN_MINT
+            || stored.purchaseSignature !== d.paymentSignature
+            || stored.purchaseId && stored.purchaseId !== id
+            || stored.purchaseMemo && stored.purchaseMemo !== d.memo)
+            throw new ReviewRequired('Collectible mint is already bound to a different paid purchase.');
         d.prize = stored;
         await this.jobs.put(id, 'pack', 'complete', d);
         return stored;

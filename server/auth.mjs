@@ -63,6 +63,7 @@ export class Auth {
     this.checkHoldings = checkHoldings;
     this.challenges = new Map();
     this.sessions = new Map();
+    this.revalidations = new Map();
     this.sessionLifetimeMs = 60 * 60_000;
   }
   get configured() { return isPublicKey(this.mint) && Boolean(this.rpcUrl); }
@@ -108,20 +109,35 @@ export class Auth {
     if (!session || session.expiresAt <= this.now()) { if (token) this.sessions.delete(token); return null; }
     return session;
   }
-  async revalidate(session) {
-    if (!session || !this.sessions.has(session.token) || session.expiresAt <= this.now()) return false;
-    try {
-      const holdings = await this.checkHoldings({ wallet: session.wallet, mint: this.mint, rpcUrl: this.rpcUrl });
-      if (!holdings.eligible) { this.sessions.delete(session.token); return false; }
-      Object.assign(session, holdings, { verifiedAt: this.now() });
-      return true;
-    } catch {
-      // Expired evidence is never used to continue awarding valuable prizes.
-      this.sessions.delete(session.token);
-      return false;
-    }
+  revalidate(session) {
+    const live = () => session && this.sessions.get(session.token) === session && session.expiresAt > this.now();
+    if (!live()) { this.revoke(session); return Promise.resolve(false); }
+    const previous = this.revalidations.get(session.token);
+    if (previous?.session === session) return previous.promise;
+    const attempt = { session, promise: null };
+    // Defer the RPC until this promise is registered, so concurrent callers
+    // share one observation instead of committing responses out of order.
+    attempt.promise = Promise.resolve().then(async () => {
+      if (!live()) { this.revoke(session); return false; }
+      try {
+        const holdings = await this.checkHoldings({ wallet: session.wallet, mint: this.mint, rpcUrl: this.rpcUrl });
+        // Logout, expiry, or replacement may have happened while RPC was pending.
+        if (!live()) { this.revoke(session); return false; }
+        if (!holdings.eligible) { this.revoke(session); return false; }
+        Object.assign(session, holdings, { verifiedAt: this.now() });
+        return true;
+      } catch {
+        // A stale failed request must not revoke a newer session object.
+        this.revoke(session);
+        return false;
+      }
+    }).finally(() => {
+      if (this.revalidations.get(session.token) === attempt) this.revalidations.delete(session.token);
+    });
+    this.revalidations.set(session.token, attempt);
+    return attempt.promise;
   }
-  revoke(session) { if (session) this.sessions.delete(session.token); }
+  revoke(session) { if (session && this.sessions.get(session.token) === session) this.sessions.delete(session.token); }
   prune(now = this.now()) {
     for (const [nonce, item] of this.challenges) if (item.expiresAt <= now) this.challenges.delete(nonce);
     for (const [token, item] of this.sessions) if (item.expiresAt <= now) this.sessions.delete(token);

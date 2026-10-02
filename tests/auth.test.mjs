@@ -65,6 +65,108 @@ test('loss of eligibility or RPC verification revokes an existing session', asyn
   assert.equal(auth.sessionFromCookie(`cards_session=${session.token}`), null);
 });
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+test('logout while holdings RPC is pending cannot restore or authorize the revoked session', async () => {
+  let clock = 1_000_000;
+  const { wallet, key, auth } = setup({ clock: () => clock });
+  const session = await auth.verify(signed(auth.issueChallenge(wallet), key));
+  const before = { ...session };
+  const rpc = deferred();
+  let calls = 0;
+  auth.checkHoldings = () => { calls++; return rpc.promise; };
+  const first = auth.revalidate(session);
+  const second = auth.revalidate(session);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  auth.revoke(session);
+  clock += 5000;
+  rpc.resolve({ eligible: true, elite: true, holdPercent: 5 });
+  assert.deepEqual(await Promise.all([first, second]), [false, false]);
+  assert.deepEqual(session, before, 'revoked session evidence must not be refreshed');
+  assert.equal(auth.sessionFromCookie(`cards_session=${session.token}`), null);
+  assert.equal(await auth.revalidate(session), false);
+  assert.equal(calls, 1);
+  assert.equal(auth.revalidations.size, 0);
+});
+
+test('session expiry during holdings RPC fails closed even without a prune pass', async () => {
+  let clock = 1_000_000;
+  const { wallet, key, auth } = setup({ clock: () => clock });
+  const session = await auth.verify(signed(auth.issueChallenge(wallet), key));
+  const verifiedAt = session.verifiedAt;
+  const rpc = deferred();
+  auth.checkHoldings = () => rpc.promise;
+  const refresh = auth.revalidate(session);
+  await Promise.resolve();
+  clock = session.expiresAt;
+  rpc.resolve({ eligible: true, elite: true, holdPercent: 5 });
+  assert.equal(await refresh, false);
+  assert.equal(session.verifiedAt, verifiedAt);
+  assert.equal(session.elite, false);
+  assert.equal(auth.sessions.has(session.token), false);
+  assert.equal(auth.revalidations.size, 0);
+});
+
+test('concurrent session refreshes use one holdings observation and a later refresh starts after it settles', async () => {
+  let clock = 1_000_000;
+  const { wallet, key, auth } = setup({ clock: () => clock });
+  const session = await auth.verify(signed(auth.issueChallenge(wallet), key));
+  const rpc = deferred();
+  let calls = 0;
+  auth.checkHoldings = () => { calls++; return rpc.promise; };
+  const refreshes = Array.from({ length: 12 }, () => auth.revalidate(session));
+  await Promise.resolve();
+  assert.equal(calls, 1, 'concurrent requests cannot commit stale responses out of order');
+  clock += 3000;
+  rpc.resolve({ eligible: true, elite: true, holdPercent: 3 });
+  assert.deepEqual(await Promise.all(refreshes), Array(12).fill(true));
+  assert.equal(session.verifiedAt, clock);
+  assert.equal(session.elite, true);
+  assert.equal(auth.revalidations.size, 0);
+  auth.checkHoldings = async () => { calls++; return { eligible: true, elite: false, holdPercent: 0.25 }; };
+  clock += 1000;
+  assert.equal(await auth.revalidate(session), true);
+  assert.equal(calls, 2);
+  assert.equal(session.elite, false);
+  assert.equal(session.verifiedAt, clock);
+});
+
+test('stale session success or failure cannot modify or revoke a replacement with the same token', async () => {
+  for (const failure of [false, true]) {
+    const { wallet, key, auth } = setup();
+    const session = await auth.verify(signed(auth.issueChallenge(wallet), key));
+    const originalRpc = deferred();
+    const replacementRpc = deferred();
+    let calls = 0;
+    auth.checkHoldings = () => (++calls === 1 ? originalRpc : replacementRpc).promise;
+    const stale = auth.revalidate(session);
+    await Promise.resolve();
+    const replacement = { ...session };
+    auth.sessions.set(session.token, replacement);
+    const current = auth.revalidate(replacement);
+    await Promise.resolve();
+    assert.equal(calls, 2);
+    if (failure) originalRpc.reject(new Error('stale RPC failed'));
+    else originalRpc.resolve({ eligible: true, elite: true, holdPercent: 10 });
+    assert.equal(await stale, false);
+    assert.equal(auth.sessions.get(session.token), replacement);
+    assert.equal(replacement.elite, false);
+    assert.equal(auth.revalidations.size, 1, 'stale completion cannot clear the newer in-flight refresh');
+    assert.equal(await auth.revalidate(session), false);
+    replacementRpc.resolve({ eligible: true, elite: false, holdPercent: 0.5 });
+    assert.equal(await current, true);
+    assert.equal(replacement.holdPercent, 0.5);
+    assert.equal(auth.sessions.get(session.token), replacement);
+    assert.equal(auth.revalidations.size, 0);
+  }
+});
+
 test('unconfigured auth never issues a usable sign-in challenge', () => {
   const auth = new Auth({ mint: '', rpcUrl: '' });
   assert.equal(auth.configured, false);

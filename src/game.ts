@@ -235,7 +235,7 @@ export class Game {
     else if(changed)this.onMouseCaptureChange(false);
   }
   private captureDesktopPointer(){if(window.matchMedia('(hover: hover) and (pointer: fine)').matches)this.capturePointer();}
-  private inputBlocked(){return document.hidden||!!document.querySelector('dialog[open]')||!!document.activeElement?.matches('input,textarea,select,[contenteditable="true"]');}
+  private inputBlocked(){return document.hidden||!!document.body?.classList.contains('leaderboard-page')||!!document.querySelector('dialog[open]')||!!document.activeElement?.matches('input,textarea,select,[contenteditable="true"]');}
   setControl(code:string,pressed:boolean){
     if(!pressed){this.keys.delete(code);return;}
     if(this.controlling&&!this.inputBlocked()&&['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight'].includes(code))this.keys.add(code);
@@ -295,7 +295,7 @@ export class Game {
   }
   leaveExplore(){if(!this.exploring)return;this.leave();this.onExitExplore();}
   setPlaying(id:string){this.clearInput();this.resetJump();this.exploring=false;this.lobbyAvatar.visible=false;this.id=id;this.playing=true;this.overview=false;this.controls.enabled=false;this.controls.autoRotate=false;const me=this.state?.players.find(p=>p.id===id) as (Player&JumpState)|undefined;if(me){this.pos.set(me.x,0,me.z);this.localJumpStartedAt=me.jumpStartedAt??0;this.localJumpUntil=me.jumpUntil??0;this.localJumpReadyAt=me.jumpReadyAt??0;}this.resetFollowCamera();if(document.activeElement instanceof HTMLElement)document.activeElement.blur();this.captureDesktopPointer();}
-  leave(){this.releasePointer();this.resetJump();for(const a of this.characters.values()){this.scene.remove(a.group);a.dispose();}this.characters.clear();this.avatarMeshes.clear();for(const g of [...this.packMeshes.values(),...this.bases.values()])this.scene.remove(g);this.packMeshes.clear();this.bases.clear();this.state=null;this.lobbyAvatar.visible=true;this.lobbyAvatar.position.copy(this.pos);this.playing=false;this.exploring=false;this.id=null;this.controls.enabled=true;this.controls.target.set(this.pos.x,1.3,this.pos.z);this.controls.autoRotate=false;this.controls.update();}
+  leave(){this.releasePointer();this.resetJump();for(const id of [...this.characters.keys()])this.removeAvatar(id);for(const g of [...this.packMeshes.values(),...this.bases.values()])this.removeWorldObject(g);this.packMeshes.clear();this.bases.clear();this.state=null;this.lobbyAvatar.visible=true;this.lobbyAvatar.position.copy(this.pos);this.playing=false;this.exploring=false;this.id=null;this.controls.enabled=true;this.controls.target.set(this.pos.x,1.3,this.pos.z);this.controls.autoRotate=false;this.controls.update();}
   setState(state:GameState){
     this.state=state;
     const serverTime=(state as GameState&{serverTime?:number}).serverTime;
@@ -315,7 +315,19 @@ export class Game {
   }
   selectCharacter(variant:CharacterVariant){this.variant=variant;try{localStorage.setItem('cards-character',variant)}catch{}if(this.lobbyCharacter){this.scene.remove(this.lobbyCharacter.group);this.lobbyCharacter.dispose();}this.lobbyCharacter=createCharacter(variant);this.lobbyAvatar=this.lobbyCharacter.group;this.lobbyAvatar.position.copy(this.pos);this.lobbyAvatar.rotation.y=this.exploring?this.yaw:.45;this.lobbyAvatar.visible=!this.playing;this.scene.add(this.lobbyAvatar);}
   gesture(name:'PickUp'|'Interact'|'Cheer'){if(this.id)this.characters.get(this.id)?.playOnce(name);else this.lobbyCharacter?.playOnce(name);}
-  makeAvatar(id:string,variant:CharacterVariant,color:number){const actor=createCharacter(variant,color);this.characters.set(id,actor);const ring=new THREE.Mesh(new THREE.RingGeometry(.62,.69,32),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.65,side:THREE.DoubleSide}));ring.rotation.x=-Math.PI/2;ring.position.y=.035;actor.group.add(ring);return actor.group;}
+  private removeWorldObject(group:THREE.Group){
+    this.scene.remove(group);
+    group.traverse(object=>{if(object instanceof THREE.Mesh){object.geometry.dispose();for(const material of Array.isArray(object.material)?object.material:[object.material])material.dispose();}});
+    group.clear();
+  }
+  private removeAvatar(id:string){
+    const actor=this.characters.get(id),ring=actor?.group.getObjectByName('PlayerMarker');
+    // This marker is owned by Game, outside CharacterInstance's shared rig.
+    if(ring instanceof THREE.Mesh){ring.geometry.dispose();for(const material of Array.isArray(ring.material)?ring.material:[ring.material])material.dispose();}
+    if(actor){this.scene.remove(actor.group);actor.dispose();}
+    this.characters.delete(id);this.avatarMeshes.delete(id);
+  }
+  makeAvatar(id:string,variant:CharacterVariant,color:number){const actor=createCharacter(variant,color);this.characters.set(id,actor);const ring=new THREE.Mesh(new THREE.RingGeometry(.62,.69,32),new THREE.MeshBasicMaterial({color,transparent:true,opacity:.65,side:THREE.DoubleSide}));ring.name='PlayerMarker';ring.rotation.x=-Math.PI/2;ring.position.y=.035;actor.group.add(ring);return actor.group;}
   makePack(value:number){const g=new THREE.Group();const color=COLORS[value]??COLORS[25];const m=new THREE.Mesh(new THREE.BoxGeometry(.82,1.14,.18),new THREE.MeshStandardMaterial({color,metalness:.65,roughness:.3}));m.castShadow=true;g.add(m);const inner=new THREE.Mesh(new THREE.BoxGeometry(.65,.85,.19),new THREE.MeshStandardMaterial({color:0x273d36,roughness:.35,metalness:.3}));g.add(inner);const gem=new THREE.Mesh(new THREE.OctahedronGeometry(.26),new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:.4,metalness:.6,roughness:.3}));gem.position.z=.2;g.add(gem);for(const y of [-.51,.51]){const seam=new THREE.Mesh(new THREE.BoxGeometry(.84,.09,.21),new THREE.MeshStandardMaterial({color,metalness:.8,roughness:.4}));seam.position.y=y;g.add(seam);}return g;}
   makeBase(color:number){const g=new THREE.Group();const ring=new THREE.Mesh(new THREE.RingGeometry(3.3,3.65,64),new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide,transparent:true,opacity:.65}));ring.rotation.x=-Math.PI/2;ring.position.y=.06;g.add(ring);const box=new THREE.Mesh(new THREE.BoxGeometry(1.2,.7,.8),new THREE.MeshStandardMaterial({color:0x374b40,metalness:.25,roughness:.6}));box.position.set(0,.35,0);box.castShadow=true;g.add(box);const strip=new THREE.Mesh(new THREE.BoxGeometry(1.23,.1,.83),new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:.4}));strip.position.y=.58;g.add(strip);return g;}
   blocked(x:number,z:number){return Math.abs(x)>124||Math.abs(z)>124||this.world.colliders.some(c=>{const nx=Math.max(c.x-c.w/2,Math.min(x,c.x+c.w/2));const nz=Math.max(c.z-c.d/2,Math.min(z,c.z+c.d/2));return (x-nx)**2+(z-nz)**2<.6**2;})}
@@ -350,7 +362,7 @@ export class Game {
       const f=(this.keys.has('KeyW')||this.keys.has('ArrowUp')?1:0)-(this.keys.has('KeyS')||this.keys.has('ArrowDown')?1:0)+this.movementInput.y;
       const r=(this.keys.has('KeyD')||this.keys.has('ArrowRight')?1:0)-(this.keys.has('KeyA')||this.keys.has('ArrowLeft')?1:0)+this.movementInput.x;
       const sprint=(this.keys.has('ShiftLeft')||this.keys.has('ShiftRight'))&&(this.exploring||(me?.stamina??100)>3);
-      const speed=this.exploring?(sprint?12:7):((me?.ability==='dash'&&Date.now()<(me.abilityUntil??0)?20:sprint?15:10)*(me?.carrying?.8:1));
+      const speed=this.exploring?(sprint?12:7):((me?.ability==='dash'&&jumpNow<(me.abilityUntil??0)?20:sprint?15:10)*(me?.carrying?.8:1));
       if(f||r){
         let x=-Math.sin(this.renderedAngle)*f+Math.cos(this.renderedAngle)*r;let z=-Math.cos(this.renderedAngle)*f-Math.sin(this.renderedAngle)*r;
         const length=Math.hypot(x,z),strength=Math.min(1,Math.hypot(f,r));x=x/length*speed*dt*strength;z=z/length*speed*dt*strength;
@@ -366,12 +378,15 @@ export class Game {
       }
       if(!blockedInput)this.followCamera();
     }else this.controls.update();
-    if(this.state&&!this.exploring){const ids=new Set(this.state.players.map(p=>p.id));for(const[id,g]of this.avatarMeshes)if(!ids.has(id)){this.scene.remove(g);this.characters.get(id)?.dispose();this.characters.delete(id);this.avatarMeshes.delete(id);const b=this.bases.get(id);if(b)this.scene.remove(b);this.bases.delete(id);}
-      for(const p of this.state.players){let g=this.avatarMeshes.get(p.id);if(!g){g=this.makeAvatar(p.id,p.character??'scout',p.id===this.id?0xd7f887:0xe39a77);this.scene.add(g);this.avatarMeshes.set(p.id,g);const b=this.makeBase(p.id===this.id?0xd7f887:0xe39a77);b.position.set(p.base.x,0,p.base.z);this.scene.add(b);this.bases.set(p.id,b);}
+    if(this.state&&!this.exploring){const ids=new Set(this.state.players.map(p=>p.id));for(const id of this.avatarMeshes.keys())if(!ids.has(id)){this.removeAvatar(id);const b=this.bases.get(id);if(b)this.removeWorldObject(b);this.bases.delete(id);}
+      for(const p of this.state.players){let g=this.avatarMeshes.get(p.id);if(g&&g.userData.characterVariant!==(p.character??'scout')){this.removeAvatar(p.id);g=undefined;}if(!g){g=this.makeAvatar(p.id,p.character??'scout',p.id===this.id?0xd7f887:0xe39a77);g.position.set(p.x,0,p.z);g.rotation.y=p.yaw;this.scene.add(g);this.avatarMeshes.set(p.id,g);if(!this.bases.has(p.id)){const b=this.makeBase(p.id===this.id?0xd7f887:0xe39a77);this.scene.add(b);this.bases.set(p.id,b);}}
+        this.bases.get(p.id)?.position.set(p.base.x,0,p.base.z);
         const local=p.id===this.id;const jump=p as Player&JumpState;const height=local?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);const target=local?new THREE.Vector3(this.pos.x,this.pos.y+height,this.pos.z):new THREE.Vector3(p.x,height,p.z);const dist=Math.hypot(g.position.x-target.x,g.position.z-target.z);g.position.lerp(target,local?1:Math.min(1,dt*13));const desiredYaw=local?this.yaw:p.yaw;g.rotation.y+=Math.atan2(Math.sin(desiredYaw-g.rotation.y),Math.cos(desiredYaw-g.rotation.y))*Math.min(1,dt*15);const walk=local?moving:dist>.08;this.characters.get(p.id)?.update(dt,{moving:walk,sprinting:local?(this.keys.has('ShiftLeft')||this.keys.has('ShiftRight')):dist>1,carrying:!!p.carrying});
       }
-      const packIds=new Set(this.state.packs.filter(p=>p.status!=='secured').map(p=>p.id));for(const [id,g]of this.packMeshes)if(!packIds.has(id)){this.scene.remove(g);this.packMeshes.delete(id);}
-      for(const p of this.state.packs){if(p.status==='secured')continue;let g=this.packMeshes.get(p.id);if(!g){g=this.makePack(p.tier);this.packMeshes.set(p.id,g);this.scene.add(g);}const carrier=this.state.players.find(pl=>pl.id===p.carrierId||pl.carrying===p.id);if(carrier){const c=carrier.id===this.id?this.pos:new THREE.Vector3(carrier.x,0,carrier.z);const jump=carrier as Player&JumpState;const height=carrier.id===this.id?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);g.position.set(c.x,2.8+height+Math.sin(t*3)*.06,c.z);g.visible=true;}else{g.position.set(p.x,1.15+Math.sin(t*2)*.13,p.z);g.visible=!!me&&Math.hypot(me.x-p.x,me.z-p.z)<(me.ability==='radar'&&Date.now()<(me.abilityUntil??0)?42:13);}g.rotation.y=t*.55;}
+      const packIds=new Set(this.state.packs.filter(p=>p.status!=='secured').map(p=>p.id));for(const [id,g]of this.packMeshes)if(!packIds.has(id)){this.removeWorldObject(g);this.packMeshes.delete(id);}
+      // The authority already filters hidden packs by radius and sight lines.
+      // Re-filtering with the client's clock can hide valid radar discoveries.
+      for(const p of this.state.packs){if(p.status==='secured')continue;let g=this.packMeshes.get(p.id);if(!g){g=this.makePack(p.tier);this.packMeshes.set(p.id,g);this.scene.add(g);}const carrier=this.state.players.find(pl=>pl.id===p.carrierId||pl.carrying===p.id);if(carrier){const c=carrier.id===this.id?this.pos:new THREE.Vector3(carrier.x,0,carrier.z);const jump=carrier as Player&JumpState;const height=carrier.id===this.id?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);g.position.set(c.x,2.8+height+Math.sin(t*3)*.06,c.z);g.visible=true;}else{g.position.set(p.x,1.15+Math.sin(t*2)*.13,p.z);g.visible=!!me;}g.rotation.y=t*.55;}
     }
     this.updateCompassHeading();
     this.renderer.render(this.scene,this.camera);

@@ -31,18 +31,20 @@ export class Game {
     this.spawnQueueCursor = 0;
     this.players = new Map();
     this.events = [];
+    this.eventListeners = new Set();
     this.colliders = colliders;
     this.lastTick = now;
     this.roundEndsAt = now + 30 * 60_000;
     this.eventSequence = 0;
     this.treasury = { balance: 0, fees10m: 0, reserved: 0, nextDropAt: null, enabled: false, ready: false, blockers: ['Live pack funding has not been configured.'] };
-    this.recoverUnreachableHiddenPacks(persisted.packs, now);
+    this.recoverUnreachableHiddenPacks(now);
     this.persist();
   }
-  recoverUnreachableHiddenPacks(persistedPacks, now) {
-    // Only records already hidden when the authority stopped are candidates.
-    // A carried pack's ordinary restart drop keeps the last carrier position.
-    const hidden = persistedPacks.filter(pack => pack.status === 'hidden');
+  recoverUnreachableHiddenPacks(now) {
+    // Restart drops carried packs at their saved position. Validate those drops
+    // too: a geometry update may have placed a wall over the old carrier route.
+    // Any reachable saved location remains unchanged.
+    const hidden = this.packs.filter(pack => pack.status === 'hidden');
     if (!hidden.length) return;
     const navigation = this.placement();
     const blocked = hidden.filter(pack => {
@@ -84,9 +86,16 @@ export class Game {
     this.store?.save({ version: 1, packs: this.packs, accounts: this.accounts, awards: this.awards,
       pendingSpawns: this.pendingSpawns, spawnHistory: this.spawnHistory });
   }
-  addEvent(text, now = Date.now()) {
-    this.events.unshift({ id: `event-${++this.eventSequence}`, text, time: now });
+  subscribeEvents(listener) { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
+  notifyListeners(event, details) {
+    // Presentation listeners cannot undo an already committed game transition.
+    for (const listener of this.eventListeners) { try { listener(event, details); } catch { /* Community can recover confirmed wins from durable collections. */ } }
+  }
+  addEvent(text, now = Date.now(), details = null) {
+    const event = { id: `event-${++this.eventSequence}`, text, time: now };
+    this.events.unshift(event);
     this.events.length = Math.min(this.events.length, 14);
+    this.notifyListeners(event, details);
   }
   addFundedPack(prize, now = Date.now()) {
     if (!prize?.id || !prize.mint || !prize.purchaseSignature || ![25, 50, 100, 250, 500].includes(prize.tierUsd)) throw new Error('A purchased, custodied prize is required to create a world pack.');
@@ -162,7 +171,9 @@ export class Game {
       account.base = this.allocateBase(); account.baseLayoutVersion = HOME_LAYOUT_VERSION;
     }
     const player = {
-      id, name: String(name).replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 18) || 'HUNTER',
+      // Join names are untrusted JSON. String(object) can call attacker-supplied
+      // toString/valueOf properties and throw out of the websocket handler.
+      id, name: (typeof name === 'string' ? name : '').replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 18) || 'HUNTER',
       x: account.base.x, z: account.base.z, yaw: 0, carrying: null, base: account.base,
       score: account.score, elite: identity.elite, bot: false, character: account.character,
       stamina: clamp(account.stamina ?? 100, 0, 100), sprinting: false,
@@ -172,8 +183,11 @@ export class Game {
       jumpStartedAt: 0, jumpUntil: 0, jumpReadyAt: account.jumpReadyAt ?? 0,
       collection: account.collection, holdPercent: identity.holdPercent,
     };
+    if (player.name.toLowerCase() === 'looter') player.name = 'HUNTER';
+    account.name = player.name;
     this.players.set(id, player);
     this.persist();
+    this.notifyListeners(null, { kind: 'profile' });
     return player;
   }
   setCharacter(id, variant) {
@@ -182,6 +196,7 @@ export class Game {
     player.character = variant;
     this.accounts[id].character = variant;
     this.persist();
+    this.notifyListeners(null, { kind: 'profile' });
     return true;
   }
   allocateBase() {
@@ -208,6 +223,7 @@ export class Game {
     }
     this.persist();
     this.players.delete(id);
+    this.notifyListeners(null, { kind: 'profile' });
   }
   collides(x, z, radius = GAME_RULES.playerRadius) {
     if (Math.abs(x) > GAME_RULES.worldRadius || Math.abs(z) > GAME_RULES.worldRadius) return true;
@@ -290,7 +306,7 @@ export class Game {
       Object.assign(pack, { status: 'carried', carrierId: id, protectedUntil: now + GAME_RULES.pickupProtectionMs });
       this.followCarriedPack(player);
       this.persist();
-      this.addEvent(`${player.name} found a $${pack.tier} pack. Intercept before extraction!`, now);
+      this.addEvent(`${player.name} found a $${pack.tier} pack. Intercept before extraction!`, now, { kind: 'pickup', wallet: id, name: player.name, tier: pack.tier });
       return { ok: true, action: 'picked_up', packId: pack.id };
     }
     const carrier = [...this.players.values()].filter(other => other.id !== id && other.carrying && distance(player, other) <= GAME_RULES.stealRange && this.clearLine(player, other))
@@ -305,7 +321,7 @@ export class Game {
     Object.assign(pack, { carrierId: id, protectedUntil: now + GAME_RULES.pickupProtectionMs });
     this.followCarriedPack(player);
     this.persist();
-    this.addEvent(`${player.name} stole the $${pack.tier} pack from ${carrier.name}!`, now);
+    this.addEvent(`${player.name} stole the $${pack.tier} pack from ${carrier.name}!`, now, { kind: 'stolen', wallet: id, name: player.name, tier: pack.tier });
     return { ok: true, action: 'stolen', packId: pack.id };
   }
   deliver(player, now = Date.now()) {
@@ -320,18 +336,19 @@ export class Game {
     this.accounts[player.id].score = player.score;
     this.awards.push({ id: pack.id, mint: pack.mint, wallet: player.id, status: 'pending', securedAt: now });
     this.persist(); // Durable outbox first; token transfer happens asynchronously.
-    this.addEvent(`${player.name} extracted a $${pack.tier} pack. Wallet delivery is being processed.`, now);
+    this.addEvent(`${player.name} extracted a $${pack.tier} pack. Wallet delivery is being processed.`, now, { kind: 'deposit', wallet: player.id, name: player.name, tier: pack.tier });
     return true;
   }
   pendingAwards(now = Date.now()) { return this.awards.filter(award => award.status === 'pending' && (!award.nextAttemptAt || award.nextAttemptAt <= now)).map(award => ({ ...award })); }
-  markAward(id, result) {
+  markAward(id, result, now = Date.now()) {
     const award = this.awards.find(item => item.id === id);
     if (!award || award.status === 'confirmed' || !result) return false;
     const reward = this.accounts[award.wallet]?.collection.find(item => item.id === id);
     if (result.status === 'confirmed' && result.signature) {
-      Object.assign(award, { status: 'confirmed', signature: result.signature, nextAttemptAt: null, reason: null });
-      if (reward) Object.assign(reward, { status: 'transferred', signature: result.signature, nextAttemptAt: null, reason: null });
+      Object.assign(award, { status: 'confirmed', signature: result.signature, confirmedAt: now, nextAttemptAt: null, reason: null });
+      if (reward) Object.assign(reward, { status: 'transferred', signature: result.signature, confirmedAt: now, nextAttemptAt: null, reason: null });
       this.persist();
+      this.addEvent('A collected prize transfer was confirmed.', now, { kind: 'win', wallet: award.wallet, awardId: id });
       return true;
     }
     if (!['pending', 'quarantined'].includes(result.status)) return false;

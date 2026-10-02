@@ -37,7 +37,7 @@ for (const path of [...new Set(entryAssets)]) {
   if (!direct) assert.match(response.headers.get('cache-control') ?? '', /max-age=31536000/);
   assert.ok((await response.arrayBuffer()).byteLength > 0, path);
 }
-for (const path of ['/brand/lootmon-mark.svg', '/brand/lootmon-logo.webp', ...[25, 50, 100, 250, 500].map(tier => `/art/lootmon-pack-${tier}.webp`), '/fonts/space-grotesk-500-v1.woff2', ...['Rogue', 'Rogue_Hooded', 'Mage'].map(name => `/models/kaykit-adventurers/${name}.glb`)]) {
+for (const path of ['/brand/lootmon-mark.svg', '/brand/lootmon-logo.webp', '/art/looter-avatar.png', ...[25, 50, 100, 250, 500].map(tier => `/art/lootmon-pack-${tier}.webp`), '/fonts/space-grotesk-500-v1.woff2', ...['Rogue', 'Rogue_Hooded', 'Mage'].map(name => `/models/kaykit-adventurers/${name}.glb`)]) {
   const response = await get(path);
   assert.doesNotMatch(response.headers.get('content-type') ?? '', /text\/html/, `${path} must be an asset, not a fallback page`);
   assert.ok((await response.arrayBuffer()).byteLength > 0, path);
@@ -52,6 +52,11 @@ assert.equal(configuration.eliteAbovePercent, 2);
 const status = await (await get('/api/status')).json();
 assert.equal(status.ok, true);
 assert.ok(!Array.isArray(status.state?.players) && !Array.isArray(status.state?.packs), 'Public status must not reveal players or hidden coordinates');
+assert.match(await (await get('/leaderboard')).text(), /<title>Lootmon/);
+const leaderboard = await (await get('/api/leaderboard')).json();
+assert.ok(Array.isArray(leaderboard.entries), 'Leaderboard is served by the authority');
+const community = await (await get('/api/community')).json();
+assert.ok(Array.isArray(community.chat) && Array.isArray(community.activity), 'Public community feed is available');
 await (await get('/api/auth/session', 401)).arrayBuffer();
 await (await get('/api/collection', 401)).arrayBuffer();
 

@@ -17,11 +17,12 @@ async function fixture() {
   let now = 10, modal = false, overlay = false, denyCapture = false, captures = 0, actions = 0, liveActions = 0;
   Object.assign(window, { matchMedia: () => ({ matches: true }) });
   Object.assign(document, {
-    hidden: false, activeElement: null, pointerLockElement: null,
+    hidden: false, activeElement: null, pointerLockElement: null, body: { classList: new Set() },
     querySelector: () => modal ? {} : null,
     elementFromPoint: () => overlay ? hud : canvas,
     exitPointerLock() { this.pointerLockElement = null; this.dispatchEvent(new Event('pointerlockchange')); },
   });
+  document.body.classList.contains = name => document.body.classList.has(name);
   Object.assign(canvas, {
     style: {}, getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 600 }),
     setPointerCapture: id => pointerIds.add(id), hasPointerCapture: id => pointerIds.has(id), releasePointerCapture: id => pointerIds.delete(id),
@@ -42,7 +43,7 @@ async function fixture() {
     constructor(camera) { this.camera = camera; }
     update() { this.camera.lookAt(this.target); }
   }
-  const makeCharacter = () => ({ group: new THREE.Group(), update: (_dt, state) => motions.push(state), playOnce: name => gestures.push(name), dispose() {} });
+  const makeCharacter = variant => { const group = new THREE.Group(); group.userData.characterVariant = variant; return { group, update: (_dt, state) => motions.push(state), playOnce: name => gestures.push(name), dispose() {} }; };
   const Game = createClass({ ...THREE, WebGLRenderer: Renderer }, Controls, makeCharacter, async () => {}, () => ({ spawn: new THREE.Vector3(0, 0, 22), colliders: [], update() {} }), window, document,
     { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) }, class {}, class { observe() {} }, 1, { now: () => now });
   const game = new Game({ clientWidth: 1000, clientHeight: 600, appendChild() {} });
@@ -122,6 +123,32 @@ test('grab and context-menu handling stay on the active canvas, without queued m
   assert.equal(f.actions, 1);
   f.game.leave();
   assert.equal(emit(f.canvas, 'contextmenu').defaultPrevented, false);
+});
+
+test('leaderboard and chat focus suspend controls without leaving the active hunt', async () => {
+  const f = await fixture();
+  await f.game.enterExplore();
+  emit(f.window, 'keydown', { code: 'KeyW', repeat: false });
+  f.frame(3);
+  const before = f.game.explorationPosition;
+  f.document.body.classList.add('leaderboard-page');
+  emit(f.window, 'keydown', { code: 'Space', repeat: false });
+  rightPress(f.canvas);
+  f.frame(10);
+  near(f.game.explorationPosition.x, before.x); near(f.game.explorationPosition.z, before.z);
+  assert.equal(f.actions, 0);
+  assert.equal(f.game.exploring, true);
+  f.document.body.classList.delete('leaderboard-page');
+  f.document.activeElement = { matches: () => true };
+  emit(f.window, 'keydown', { code: 'KeyW', repeat: false });
+  f.frame(10);
+  near(f.game.explorationPosition.z, before.z);
+  f.document.activeElement = null;
+  f.frame(3);
+  near(f.game.explorationPosition.z, before.z, .001);
+  emit(f.window, 'keydown', { code: 'KeyW', repeat: false });
+  f.frame(3);
+  assert.notEqual(f.game.explorationPosition.z, before.z);
 });
 
 test('captured mouse without a held button turns continuously, honors saved sensitivity, and Escape releases first', async () => {
@@ -218,4 +245,66 @@ test('touch drag and running grab retain movement; measured FPS uses rendering t
   f.game.clock.getDelta = () => .05; // Deliberately different from render cadence.
   f.frame(150);
   near(f.game.framesPerSecond, 60);
+});
+
+function snapshot(overrides = {}) {
+  return {
+    players: [{ id: 'verified-player', name: 'Collector', x: 0, z: 0, yaw: 0, carrying: null, base: { x: 0, z: 0 }, score: 0, elite: true, stamina: 100, character: 'scout', ...overrides }],
+    packs: [], treasury: {}, events: [], serverTime: Date.now() - 600_000,
+  };
+}
+
+test('dash prediction uses server time when the local wall clock is ten minutes ahead', async () => {
+  const f = await fixture();
+  const state = snapshot({ ability: 'dash', abilityUntil: Date.now() - 600_000 + 8000 });
+  f.game.setState(state); f.game.setPlaying('verified-player');
+  f.game.angle = f.game.renderedAngle = 0;
+  f.game.setControl('KeyW', true); f.frame();
+  near(f.game.pos.z, -20 / 60);
+  const before = f.game.pos.z;
+  f.game.setState({ ...state, players: [{ ...state.players[0], abilityUntil: state.serverTime - 1 }] });
+  f.frame();
+  near(f.game.pos.z - before, -10 / 60);
+});
+
+test('server-disclosed radar packs render despite clock skew and disappear with resource cleanup when withdrawn', async () => {
+  const f = await fixture();
+  const state = snapshot({ ability: 'radar', abilityUntil: Date.now() - 600_000 + 8000 });
+  state.packs = [{ id: 'funded-pack', tier: 500, value: 500, x: 40, z: 0, status: 'hidden' }];
+  f.game.setState(state); f.game.setPlaying('verified-player'); f.frame();
+  const pack = f.game.packMeshes.get('funded-pack');
+  assert.ok(pack?.visible, 'Allowed server discovery cannot be hidden by local clock skew');
+  let resources = 0, disposed = 0;
+  pack.traverse(object => { if (object instanceof THREE.Mesh) {
+    for (const resource of [object.geometry, ...(Array.isArray(object.material) ? object.material : [object.material])]) { resources++; resource.addEventListener('dispose', () => disposed++); }
+  } });
+  f.game.setState({ ...state, packs: [] }); f.frame();
+  assert.equal(f.game.packMeshes.size, 0);
+  assert.equal(f.game.scene.children.includes(pack), false);
+  assert.equal(disposed, resources, 'Removed discoveries release their GPU geometry and materials');
+  assert.ok(resources > 0);
+});
+
+test('same-wallet reconnect updates character and base, and leaving disposes game-owned markers', async () => {
+  const f = await fixture();
+  const state = snapshot();
+  state.players.push({ ...state.players[0], id: 'rival', x: 60, z: 20, base: { x: 60, z: 20 } });
+  f.game.setState(state); f.game.setPlaying('verified-player'); f.frame();
+  const oldRival = f.game.avatarMeshes.get('rival');
+  near(oldRival.position.x, 60);
+  let oldMarkerDisposed = false;
+  oldRival.getObjectByName('PlayerMarker').geometry.addEventListener('dispose', () => oldMarkerDisposed = true);
+  const next = { ...state, players: [state.players[0], { ...state.players[1], character: 'sage', base: { x: -60, z: 20 } }] };
+  f.game.setState(next); f.frame();
+  const replacement = f.game.avatarMeshes.get('rival');
+  assert.notEqual(replacement, oldRival);
+  assert.equal(replacement.userData.characterVariant, 'sage');
+  assert.equal(oldMarkerDisposed, true);
+  assert.equal(f.game.bases.size, 2);
+  near(f.game.bases.get('rival').position.x, -60);
+  let baseDisposed = 0;
+  for (const base of f.game.bases.values()) base.traverse(object => { if (object instanceof THREE.Mesh) object.geometry.addEventListener('dispose', () => baseDisposed++); });
+  f.game.leave();
+  assert.equal(f.game.avatarMeshes.size, 0); assert.equal(f.game.bases.size, 0);
+  assert.ok(baseDisposed > 0);
 });

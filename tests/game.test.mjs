@@ -29,6 +29,21 @@ test('production world starts empty and rejects an unauthenticated identity', ()
   assert.throws(() => game.addFundedPack({ id: 'unfunded', tierUsd: 500 }), /custodied/);
 });
 
+test('malformed JSON join names cannot invoke object conversion or crash the game authority', () => {
+  const game = new Game({ now: START });
+  const names = [null, 123, [], {}, JSON.parse('{"toString":null}'), JSON.parse('{"toString":"invalid","valueOf":{}}')];
+  for (const [index, name] of names.entries()) {
+    const wallet = `name-fixture-${index}`;
+    const player = game.addPlayer(wallet, name, START, identity(wallet));
+    assert.equal(player.name, 'HUNTER');
+    assert.equal(player.carrying, null);
+    assert.equal(player.elite, false);
+  }
+  const player = game.addPlayer('valid-name', '  <Explorer>\u0000  ', START, identity('valid-name'));
+  assert.equal(player.name, 'Explorer');
+  assert.equal(game.players.size, names.length + 1);
+});
+
 test('character selection persists across reconnect, is whitelisted, and changes no gameplay privileges', () => {
   const game = create();
   const player = add(game, 'p');
@@ -146,6 +161,40 @@ test('teleports are clamped and packet flooding cannot manufacture movement time
   assert.equal(player.x, 3.5);
   assert.equal(game.move('p', { x: Infinity, z: 22, yaw: 0 }, START + 100001), false);
   assert.equal(player.x, 3.5);
+});
+
+test('malformed and extreme movement packets cannot corrupt coordinates, forge privileges, or move a carried prize beyond authority speed', () => {
+  const game = create();
+  const player = add(game, 'packet-fixture');
+  player.x = 0; player.z = 12;
+  assert.equal(game.interact(player.id, START).action, 'picked_up');
+  const home = { ...player.base };
+  const original = { x: player.x, z: player.z, yaw: player.yaw, lastMoveAt: player.lastMoveAt, stamina: player.stamina };
+  for (const payload of [
+    { x: NaN, z: 0, yaw: 0 }, { x: Infinity, z: 0, yaw: 0 }, { x: 0, z: -Infinity, yaw: 0 },
+    { x: null, z: 0, yaw: 0 }, { x: '0', z: 0, yaw: 0 }, { x: 0, z: [], yaw: 0 },
+    { x: 0, z: 0, yaw: {} }, { x: 0, z: 0 },
+  ]) {
+    assert.equal(game.move(player.id, payload, START + 250), false);
+    assert.deepEqual({ x: player.x, z: player.z, yaw: player.yaw, lastMoveAt: player.lastMoveAt, stamina: player.stamina }, original);
+  }
+  for (const [index, [x, z]] of [
+    [Number.MAX_VALUE, Number.MAX_VALUE], [-Number.MAX_VALUE, Number.MAX_VALUE],
+    [Number.MAX_VALUE, 1], [0, -1e100], [10000, 10000], [-10000, -10000], [1e100, -1e100],
+  ].entries()) {
+    const before = { x: player.x, z: player.z };
+    game.move(player.id, { x, z, yaw: Number.MAX_VALUE, now: START + 1e12, timestamp: START + 1e12, speed: 1e9, elite: true, base: { x: 0, z: 12 }, carrying: null }, START + (index + 1) * 250);
+    assert.ok(Number.isFinite(player.x) && Number.isFinite(player.z) && Number.isFinite(player.yaw));
+    assert.ok(Math.hypot(player.x - before.x, player.z - before.z) <= GAME_RULES.walkSpeed * GAME_RULES.carrySpeedMultiplier * .25 + 1e-9);
+    assert.equal(game.collides(player.x, player.z), false);
+    assert.equal(player.elite, false);
+    assert.deepEqual(player.base, home);
+    assert.equal(player.carrying, 'pack-1');
+    assert.equal(game.packs[0].status, 'carried');
+    assert.equal(game.packs[0].x, player.x);
+    assert.equal(game.packs[0].z, player.z);
+    assert.equal(game.awards.length, 0);
+  }
 });
 
 test('walls block movement and interactions, carrying imposes a speed penalty', () => {
@@ -457,7 +506,7 @@ test('funded spawn queue and site history survive restart; blocked premium entri
   }
 });
 
-test('startup durably requeues only unreachable saved hidden inventory, preserving custody and valid or carried locations', () => {
+test('startup requeues unreachable hidden or formerly carried inventory while preserving valid saved locations', () => {
   const directory = mkdtempSync(join(tmpdir(), 'cards-hidden-recovery-'));
   let store;
   try {
@@ -472,11 +521,12 @@ test('startup durably requeues only unreachable saved hidden inventory, preservi
     };
     const valid = storedPack('valid-saved', 'hidden', validSite);
     const boundaryDrop = storedPack('boundary-drop', 'hidden', { x: 123.9, z: 0 });
-    const carried = storedPack('carried-saved', 'carried', wall);
+    const carried = storedPack('carried-saved', 'carried', validSite);
+    const blockedCarried = storedPack('blocked-carried-saved', 'carried', wall);
     const blocked = storedPack('blocked-saved', 'hidden', wall);
-    store.save({ version: 1, accounts: {}, awards: [], packs: [blocked, valid, carried, boundaryDrop] });
+    store.save({ version: 1, accounts: {}, awards: [], packs: [blocked, valid, carried, boundaryDrop, blockedCarried] });
     const restored = new Game({ now: START, colliders: WORLD_COLLIDERS, randomIndex: () => 0, store });
-    assert.equal(restored.pendingSpawns.length, 1);
+    assert.equal(restored.pendingSpawns.length, 2);
     assert.equal(restored.pendingSpawns[0].id, blocked.id);
     assert.equal(restored.pendingSpawns[0].mint, blocked.mint);
     assert.equal(restored.pendingSpawns[0].purchaseSignature, blocked.purchaseSignature);
@@ -486,15 +536,24 @@ test('startup durably requeues only unreachable saved hidden inventory, preservi
     assert.deepEqual(restored.packs.find(pack => pack.id === valid.id), valid);
     assert.deepEqual(restored.packs.find(pack => pack.id === boundaryDrop.id), boundaryDrop);
     assert.deepEqual(restored.packs.find(pack => pack.id === carried.id), { ...carried, status: 'hidden', carrierId: null, protectedUntil: 0 });
+    assert.equal(restored.packs.some(pack => pack.id === blockedCarried.id), false);
+    assert.equal(restored.pendingSpawns.find(prize => prize.id === blockedCarried.id).mint, blockedCarried.mint);
+    assert.equal(restored.pendingSpawns.find(prize => prize.id === blockedCarried.id).purchaseSignature, blockedCarried.purchaseSignature);
     const durable = JSON.parse(readFileSync(store.path, 'utf8'));
-    assert.equal(durable.pendingSpawns.length, 1);
+    assert.equal(durable.pendingSpawns.length, 2);
     assert.equal(durable.packs.some(pack => pack.id === blocked.id), false);
+    assert.equal(durable.packs.some(pack => pack.id === blockedCarried.id), false);
     assert.equal(restored.addFundedPack(fixturePrize(blocked.id), START + 1), true);
-    assert.equal(restored.pendingSpawns.length, 0);
+    assert.equal(restored.pendingSpawns.length, 1);
     assert.equal(restored.packs.filter(pack => pack.id === blocked.id).length, 1);
     assert.equal(restored.addFundedPack(fixturePrize(blocked.id), START + 2), false);
     assert.equal(navigation.reachable(restored.packs.find(pack => pack.id === blocked.id)), true);
     assert.equal(restored.packs.find(pack => pack.id === blocked.id).mint, blocked.mint);
+    assert.equal(restored.addFundedPack(fixturePrize(blockedCarried.id), START + 2), true);
+    assert.equal(restored.pendingSpawns.length, 0);
+    assert.equal(restored.packs.filter(pack => pack.id === blockedCarried.id).length, 1);
+    assert.equal(navigation.reachable(restored.packs.find(pack => pack.id === blockedCarried.id)), true);
+    assert.equal(restored.addFundedPack(fixturePrize(blockedCarried.id), START + 3), false);
     assert.equal(restored.awards.length, 0);
   } finally {
     store?.close();

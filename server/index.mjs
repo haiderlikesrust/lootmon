@@ -9,6 +9,7 @@ import { FileStore } from './storage.mjs';
 import { createProvider } from './provider.mjs';
 import { publicSite } from './public-site.mjs';
 import { clientAddress } from './network.mjs';
+import { Community } from './community.mjs';
 
 const colliderPath = fileURLToPath(new URL('../shared/world-colliders.json', import.meta.url));
 if (!existsSync(colliderPath)) throw new Error('World collider data is required. Refusing to start an unprotected world.');
@@ -46,6 +47,9 @@ const host = process.env.GAME_HOST || '127.0.0.1';
 const distPath = fileURLToPath(new URL('../dist', import.meta.url));
 const secureCookie = process.env.NODE_ENV === 'production' || auth.domain.startsWith('https://');
 const allowedOrigins = new Set((process.env.APP_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173').split(',').map(value => value.trim()).filter(Boolean));
+const community = new Community(game, { onChange(snapshot) {
+  for (const ws of clients.keys()) send(ws, { type: 'community', ...snapshot });
+} });
 
 function config() {
   return { mode: 'live', configured: auth.configured, liveEnabled: auth.configured, missingConfig: auth.missingConfig,
@@ -82,7 +86,10 @@ async function readJson(request) {
     if (length > 4096) throw Object.assign(new Error('Request body is too large.'), { status: 413 });
     chunks.push(chunk);
   }
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
+  let body;
+  try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw Object.assign(new Error('A JSON object is required.'), { status: 400 });
+  return body;
 }
 function sessionCookie(token, age = 3600) {
   return `cards_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${secureCookie ? '; Secure' : ''}`;
@@ -97,6 +104,10 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && pathname === '/api/ping') return json(response, closing || authorityLost ? 503 : 200, { ok: !closing && !authorityLost });
     if (request.method === 'GET' && pathname === '/api/config') return json(response, 200, config());
     if (request.method === 'GET' && pathname === '/api/status') return json(response, 200, { ok: true, ...config(), state: game.publicStatus() });
+    if (request.method === 'GET' && ['/api/community', '/api/leaderboard'].includes(pathname)) {
+      if (!limit(request, 'community-read', 120)) return json(response, 429, { error: 'Too many community requests. Try again shortly.' });
+      return json(response, 200, pathname === '/api/community' ? community.snapshot() : community.leaderboard());
+    }
     if (request.method === 'GET' && pathname === '/api/collection') {
       const session = auth.sessionFromCookie(request.headers.cookie);
       if (!session) return json(response, 401, { ok: false, error: 'Sign in with your wallet to see your collection.' });
@@ -112,6 +123,12 @@ const server = http.createServer(async (request, response) => {
       if (request.method === 'POST' && pathname === '/api/auth/verify') {
         const body = await readJson(request);
         const session = await auth.verify(body);
+        const previous = auth.sessionFromCookie(request.headers.cookie);
+        if (previous) {
+          auth.revoke(previous);
+          const previousSocket = walletConnections.get(previous.wallet);
+          if (clients.get(previousSocket)?.session === previous) previousSocket.close(1000, 'Wallet session replaced');
+        }
         response.setHeader('Set-Cookie', sessionCookie(session.token));
         return json(response, 200, { ok: true, player: publicSession(session), collection: game.accounts[session.wallet]?.collection ?? [], expiresAt: session.expiresAt });
       }
@@ -123,7 +140,8 @@ const server = http.createServer(async (request, response) => {
       }
       if (request.method === 'POST' && pathname === '/api/auth/logout') {
         auth.revoke(session);
-        if (session) walletConnections.get(session.wallet)?.close(1000, 'Signed out');
+        const sessionSocket = session && walletConnections.get(session.wallet);
+        if (sessionSocket && clients.get(sessionSocket)?.session === session) sessionSocket.close(1000, 'Signed out');
         response.setHeader('Set-Cookie', sessionCookie('', 0));
         return json(response, 200, { ok: true });
       }
@@ -157,7 +175,7 @@ server.on('upgrade', async (request, socket, head) => {
     if (!auth.configured || !session || Date.now() - session.verifiedAt > 60_000 && !await auth.revalidate(session)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); socket.destroy(); return;
     }
-    if (closing || authorityLost) { socket.destroy(); return; }
+    if (closing || authorityLost || auth.sessionFromCookie(request.headers.cookie) !== session) { socket.destroy(); return; }
     wss.handleUpgrade(request, socket, head, ws => wss.emit('connection', ws, session));
   } catch { socket.destroy(); }
 });
@@ -171,6 +189,7 @@ wss.on('connection', (ws, session) => {
   clients.set(ws, client);
   walletConnections.set(session.wallet, ws);
   send(ws, { type: 'state', state: game.state(null) });
+  send(ws, { type: 'community', ...community.snapshot() });
   ws.on('pong', () => { client.alive = true; });
   ws.on('error', () => {});
   ws.on('message', raw => {
@@ -198,6 +217,12 @@ wss.on('connection', (ws, session) => {
     }
     if (message.type === 'ping') {
       if (Number.isSafeInteger(message.nonce) && message.nonce >= 0) send(ws, { type: 'pong', nonce: message.nonce, serverTime: now });
+      return;
+    }
+    if (message.type === 'chat') {
+      const result = client.joined ? community.submit(client.id, message.text, now)
+        : { ok: false, reason: 'Join the hunt with your verified wallet before chatting.' };
+      send(ws, { type: 'chat_ack', ...result });
       return;
     }
     if (!client.joined) { send(ws, { type: 'error', message: 'Deploy before taking an action.' }); return; }
@@ -231,7 +256,7 @@ const heartbeat = setInterval(() => {
     if (!client.revalidating) {
       client.revalidating = true;
       auth.revalidate(client.session).then(valid => {
-        if (closing || authorityLost) return;
+        if (closing || authorityLost || walletConnections.get(client.id) !== ws || clients.get(ws) !== client || ws.readyState !== WebSocket.OPEN) return;
         if (!valid) { send(ws, { type: 'error', message: 'Token eligibility could not be verified. Please reconnect your wallet.' }); ws.close(1008, 'Eligibility verification required'); }
         else game.updateIdentity(client.id, client.session);
       }).finally(() => { client.revalidating = false; });
@@ -270,6 +295,7 @@ async function shutdown(exitCode = 0, reason = 'Server shutting down') {
   if (closing) return;
   closing = true;
   clearInterval(ticker); clearInterval(heartbeat); clearInterval(fundingTimer);
+  community.close();
   for (const ws of clients.keys()) ws.close(exitCode ? 1012 : 1001, reason);
   game.persist();
   wss.close();
