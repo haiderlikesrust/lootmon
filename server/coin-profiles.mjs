@@ -51,6 +51,13 @@ export async function selectProviderProfile(pool, mint, wallet) {
       }
       return false;
     },
+    async refundCreditedElsewhere(signature) {
+      for (const profile of profiles.filter(row => row.coin_mint !== mint)) {
+        const result = await pool.query(profileSql("SELECT 1 FROM cards_provider_ledger WHERE signature=$1 AND kind='refund' AND data->>'verified'='true' LIMIT 1", profile.table_prefix), [signature]);
+        if (result.rows.length) return true;
+      }
+      return false;
+    },
     async dailyCommitted(dayStart) {
       const walletProfiles = (await pool.query('SELECT * FROM lootmon_coin_profiles WHERE treasury_wallet=$1', [wallet])).rows;
       let total = 0n;

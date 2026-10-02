@@ -297,6 +297,7 @@ export class Providers {
         const proof = await this.chain.verifyRefund({ signature, paymentSignature: data.paymentSignature,
             recipient: config.COLLECTOR_CRYPT_PAYMENT_WALLET, mint: config.USDC_MINT, amount: BigInt(tier) * 1_000_000n });
         const evidence = { verified: true, purchaseId: id, paymentSignature: data.paymentSignature, memo: data.memo, refund: proof };
+        if (await this.jobs.db.refundCreditedElsewhere?.(proof.signature)) throw new ReviewRequired('Refund transaction was already credited to another CA.');
         try {
             await this.jobs.db.query(`INSERT INTO ledger(id,kind,amount_micros,signature,created_at,data)
               VALUES($1,'refund',$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE

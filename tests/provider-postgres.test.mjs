@@ -79,7 +79,7 @@ test('PostgreSQL persists provider recovery, excludes another authority, and cre
     }
   }
   class OfflineProviders {
-    constructor(chain, jobs) { this.chain = chain; this.jobs = jobs; }
+    constructor(chain, jobs) { this.chain = chain; this.jobs = jobs; state.currentJobs = jobs; }
     async machines() { return [{ price: 25 }]; }
     async collectFees() {
       await this.jobs.db.query("INSERT INTO ledger(id,kind,amount_micros,created_at) VALUES('fixture-fee','fee',1000000000,$1) ON CONFLICT(id) DO NOTHING", [clock]);
@@ -182,6 +182,8 @@ test('PostgreSQL persists provider recovery, excludes another authority, and cre
     await query("UPDATE jobs SET status='confirmed' WHERE id='unsettled'");
     provider = await openOther();
     assert.equal(provider.legacyMint, coin);
+    const crossCoinRefund = new Providers(new OfflineChain(state.currentJobs), state.currentJobs);
+    await assert.rejects(crossCoinRefund.recordRefund('pack:other-coin', { paymentSignature: 'different-payment', memo: 'different-order' }, 25, 'offline-fixture-verified-refund'), /already credited to another CA/);
     const otherQuery = (sql, args) => admin.query(sql.replace(/\b(jobs|ledger|prizes|reservations|awards|drops)\b/g, name => `"${schema}".lc_${coinKey(otherCoin)}_${name}`), args);
     assert.equal((await otherQuery('SELECT COUNT(*)::int AS count FROM prizes')).rows[0].count, 0);
     assert.equal((await otherQuery('SELECT COUNT(*)::int AS count FROM ledger')).rows[0].count, 0, 'new CA does not inherit recorded fees');

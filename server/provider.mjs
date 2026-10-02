@@ -121,6 +121,7 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
       onAuthorityLost();
     });
     profile = await selectProviderProfile(rawPool, config.MEMECOIN_MINT, chain.address);
+    db.refundCreditedElsewhere = signature => profile.refundCreditedElsewhere(signature);
     prefix = profile.selected.table_prefix;
     await pool.query(SCHEMA);
     await pool.query('INSERT INTO cards_provider_identity(id,coin_mint,treasury_wallet) VALUES(1,$1,$2) ON CONFLICT(id) DO NOTHING', [config.MEMECOIN_MINT, chain.address]);

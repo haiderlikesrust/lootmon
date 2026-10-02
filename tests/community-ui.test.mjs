@@ -43,6 +43,14 @@ function fixture({mobile=false,saved=null,publicResponse=null}={}){
 }
 const message=(id,text='Hello island')=>({id,kind:'player',name:'Collector',text,time:1700000000000});
 
+test('pack opening and insured-value activity renders as text with chat hidden',async()=>{
+  const f=fixture({saved:false});await flush();
+  f.ui.receive({chat:[],activity:[{id:'result',kind:'opened',name:'Looter',tier:25,time:1700000000000,text:'Rare card — insured value $68.50 (provider-reported).',insuredValue:68.5},{id:'open',kind:'opening',name:'Looter',tier:25,time:1700000000000,text:'Opening a $25 pack…'}]});
+  assert.equal(f.id('island-chat-panel').hidden,true);
+  assert.match(f.css('activity-list').textContent,/insured value \$68\.50/);
+  assert.match(f.css('activity-list').textContent,/Opening a \$25 pack/);
+});
+
 test('chat renders hostile player text literally and only validated bot transaction signatures become links',async()=>{
   const f=fixture();await flush();
   const hostile='<img src=x onerror=alert(1)>',signature='4'.repeat(88);
