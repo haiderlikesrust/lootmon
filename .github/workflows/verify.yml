@@ -52,10 +52,10 @@ jobs:
           docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml exec -T gateway nginx -t
       - name: Check provider recovery against real PostgreSQL with offline chain fixtures
         env:
-          LOOTMON_TEST_DATABASE_URL: postgres://lootmon:disposableCIpasswordOnly493873092@127.0.0.1:55432/lootmon_test
+          LOOTMON_TEST_DATABASE_URL: postgres://lootmon:disposableCIpasswordOnly493873092@postgres:5432/lootmon_test
         run: |
           docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml exec -T postgres createdb -U lootmon lootmon_test
-          node --test tests/provider-postgres.test.mjs
+          docker compose -f compose.dokploy.yaml -f deploy/compose.ci.yaml exec -T -e LOOTMON_TEST_DATABASE_URL game node --test tests/provider-postgres.test.mjs
       - name: Smoke public routes and protected WebSocket through Nginx
         run: node scripts/smoke-dokploy.mjs http://127.0.0.1:8788
       - name: Verify single authority and abrupt-restart recovery

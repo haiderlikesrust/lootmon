@@ -4,10 +4,10 @@ This follows the Grailshot hosting arrangement: Dokploy Traefik provides HTTPS, 
 
 ## Configure the Compose service
 
-1. Create a **Docker Compose** service from the Lootmon Git repository. Set Compose Path to `compose.dokploy.yaml` when this project is at the repository root. Choose ordinary Docker Compose rather than Swarm/Stack.
-2. Paste [`deploy/dokploy.env.example`](../deploy/dokploy.env.example) into Dokploy's **Environment** panel. Set `APP_ORIGIN` to the exact HTTPS origin, with no path or trailing slash. Generate a long random alphanumeric `POSTGRES_PASSWORD`; `openssl rand -hex 32` is suitable. Compose uses it for both PostgreSQL and the game's connection URL, so do not add `DATABASE_URL` here.
+1. Create a **Docker Compose** service from the Lootmon Git repository. Select branch `codex/lootmon-launch` and set Compose Path to `compose.dokploy.yaml` at the repository root. Choose ordinary Docker Compose rather than Swarm/Stack.
+2. Paste [`deploy/dokploy.env.example`](../deploy/dokploy.env.example) into Dokploy's **Environment** panel. Use `APP_ORIGIN=https://lootmon.xyz`, with no path or trailing slash. Generate a long random alphanumeric `POSTGRES_PASSWORD`; `openssl rand -hex 32` is suitable. Compose uses it for both PostgreSQL and the game's connection URL, so do not add `DATABASE_URL` here.
 3. Enter the game's `MEMECOIN_MINT`, your RPC endpoint, treasury signing key, Jupiter key, and verified Collector Crypt payment wallet when available. Set `X_ACCOUNT_URL` to the project's full X profile URL if you want it shown publicly. Leave `MAINNET_ENABLED=false` during setup. The key is the treasury's base58 64-byte secret key or a quoted JSON array of 64 bytes; keep it in runtime environment settings only.
-4. Point your domain's DNS at the Dokploy VPS. Add the domain to service **gateway**, container port **80**, path **/**, and enable HTTPS/Let's Encrypt. Preserve the path when routing. Keep both the `app` and `dokploy-network` gateway connections in Dokploy's Compose preview.
+4. Point the DNS for `lootmon.xyz` at the Dokploy VPS. Add the domain to service **gateway**, container port **80**, path **/**, and enable HTTPS/Let's Encrypt. Preserve the path when routing. Keep both the `app` and `dokploy-network` gateway connections in Dokploy's Compose preview.
 5. Deploy and wait for PostgreSQL, the game, and the gateway to become healthy. Open the HTTPS domain. Island exploration and the actual artwork work before live configuration is complete; real multiplayer and rewards retain the verified wallet gate.
 
 The sample has nine settings. Ports, storage directories, proxy trust, and game policy stay in code/Compose. `MAINNET_ENABLED=true` enables the worker's real financial paths once its required configuration passes validation. Do not enable it simply to clear a health warning: `/api/status` reports funding readiness and blockers separately from HTTP availability.
@@ -19,7 +19,7 @@ The public browser calls `/api/*` and `wss://your-domain/ws` on the same origin.
 After installing the repository's Node dependencies, run:
 
 ```sh
-node scripts/smoke-dokploy.mjs https://your-domain
+node scripts/smoke-dokploy.mjs https://lootmon.xyz
 ```
 
 This sends only public GET requests and one anonymous WebSocket handshake. It checks the built page, bundled JavaScript/CSS, logo and five packs, all three character models, fonts, gateway headers, public APIs, private collection/session protection, and rejection of an unsigned socket. It does not sign a wallet, create a player, submit a purchase, or transfer funds. An authenticated 101 upgrade and two-holder gameplay still need a separate manual check with real eligible wallets. The offline server integration test exercises that authentication protocol against a local mock RPC without a production bypass.
