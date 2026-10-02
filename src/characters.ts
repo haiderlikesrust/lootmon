@@ -37,6 +37,13 @@ function prepareTemplate(gltf: GLTF, variant: CharacterVariant): Template {
     // replaced with expedition equipment; no weapons accompany these hunters.
     if (/cape|sword|knife|crossbow|bow_|staff|weapon|shield|throwable/i.test(object.name)) removed.push(object);
     else {
+      // GLTFLoader can resolve a model even when an embedded texture request
+      // failed. These characters all require their atlas; show retry instead
+      // of silently accepting an untextured white hunter.
+      const finishes = Array.isArray(object.material) ? object.material : [object.material];
+      if (finishes.some(finish => !(finish instanceof THREE.MeshStandardMaterial) || !finish.map?.image)) {
+        throw new Error(`The ${variant} character texture did not load.`);
+      }
       object.castShadow = true;
       object.receiveShadow = true;
       if (object instanceof THREE.SkinnedMesh) object.frustumCulled = false;

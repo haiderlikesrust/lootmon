@@ -22,6 +22,8 @@ const home = await get('/');
 if (!direct) {
   assert.equal(home.headers.get('x-frame-options'), 'DENY');
   assert.match(home.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+  const connectSources = (home.headers.get('content-security-policy') ?? '').split(';').find(directive => directive.trim().startsWith('connect-src '))?.trim().split(/\s+/).slice(1) ?? [];
+  assert.ok(connectSources.includes('blob:'), 'Embedded GLB atlases need fetch(blob:) allowed by connect-src');
   assert.equal(home.headers.get('x-content-type-options'), 'nosniff');
 }
 const html = await home.text();
