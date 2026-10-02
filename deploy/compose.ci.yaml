@@ -2,7 +2,7 @@
 services:
   gateway:
     ports:
-      - "127.0.0.1:8788:80"
+      - "127.0.0.1:8788:8080"
   game:
     # The crash test restarts explicitly so it can inspect the stale lock.
     restart: "no"

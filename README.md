@@ -35,7 +35,7 @@ Copy `.env.example` to `.env` locally, or supply the same variables through the 
 
 | Variable | Required value |
 | --- | --- |
-| `APP_ORIGIN` | Exact public HTTPS origin, such as `https://lootmon.example.com`; localhost HTTP is supported for local use. |
+| `APP_ORIGIN` | Public HTTPS origin `https://lootmon.xyz`; localhost HTTP is supported for local use. |
 | `MEMECOIN_MINT` | Verified mint address of the launched game coin. It is distinct from the CARDS funding token. |
 | `X_ACCOUNT_URL` | Optional public X profile, such as `https://x.com/your_account`. |
 | `SOLANA_RPC_URL` | Reliable Solana mainnet RPC endpoint. |
@@ -66,7 +66,7 @@ Desktop controls: **WASD / arrow keys** move, **Shift** sprints, **Space** jumps
 
 ## Dokploy deployment
 
-Use [the Dokploy guide](docs/DOKPLOY.md) and `compose.dokploy.yaml` for the same hosting arrangement as Grailshot: an Nginx gateway on `dokploy-network`, a private continuous game server, and PostgreSQL 17 with persistent storage. The Node server serves both the built frontend and WebSockets, so this app needs no separate frontend service. Route the public HTTPS domain to **gateway, port 80**.
+Use [the Dokploy guide](docs/DOKPLOY.md) and `compose.dokploy.yaml` for the same hosting arrangement as Grailshot: an Nginx gateway on `dokploy-network`, a private continuous game server, and PostgreSQL 17 with persistent storage. The Node server serves both the built frontend and WebSockets, so this app needs no separate frontend service. Route **lootmon.xyz** to **gateway, container port 8080**. The production stack publishes no host ports.
 
 In Dokploy’s Environment editor, paste `deploy/dokploy.env.example`. Set `MEMECOIN_MINT` for both the holder gate and the public, copyable contract address; set `X_ACCOUNT_URL` for the footer’s X link. Change these server runtime settings and redeploy; no frontend build variables are needed. `POSTGRES_PASSWORD` replaces `DATABASE_URL` in this template because Compose constructs the private database URL.
 
