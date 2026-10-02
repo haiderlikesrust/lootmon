@@ -67,6 +67,10 @@ await new Promise((resolve, reject) => {
     response.resume();
     if (response.statusCode !== 401) reject(new Error(`WebSocket must reject anonymous access with 401, received ${response.statusCode}`));
     else resolve();
+    // Nginx can keep a rejected upgrade connection alive. Release it after
+    // checking the response instead of delaying the smoke until its idle limit.
+    response.destroy();
+    socket.terminate();
   });
 });
 console.log(`Lootmon smoke passed: built page, art/models/fonts, public APIs, private collections and anonymous WebSocket rejection${direct ? ' (direct Node; proxy headers were not checked)' : ' through the gateway'}.`);
