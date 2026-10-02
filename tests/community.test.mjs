@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import bs58 from 'bs58';
 import { Game } from '../server/game.mjs';
 import { Community, buildLeaderboard, COMMUNITY_LIMITS } from '../server/community.mjs';
+import { mapGrid } from '../shared/map-grid.mjs';
 
 const START = 1_000_000;
 const identity = wallet => ({ wallet, eligible: true, elite: false, holdPercent: .25 });
@@ -14,6 +15,36 @@ const prize = id => ({ id, mint: `private-mint-${id}`, purchaseSignature: `priva
 const confirmed = (id, value = 25, extra = {}) => ({ id, status: 'transferred', signature: signatureFor(id),
   tier: 25, value, securedAt: START, confirmedAt: START + 500, mint: `private-mint-${id}`, name: 'PRIVATE CARD NAME', ...extra });
 const account = (name, collection = []) => ({ name, collection, score: 99_999, character: 'ranger' });
+
+test('Looter gives shared coarse common-pack clues without exposing premium or carried locations', () => {
+  const game = new Game({ now: START });
+  const community = new Community(game);
+  join(game, 'hunter-one'); join(game, 'hunter-two');
+  game.packs = [
+    { id:'common', tier:25, x:-23.456, z:24.567, difficulty:'interior', status:'hidden', mint:'private-mint' },
+    { id:'rare', tier:100, x:104, z:-111, status:'hidden' },
+    { id:'carried', tier:50, x:73, z:81, status:'carried' },
+    { id:'won', tier:25, x:0, z:0, status:'secured' },
+  ];
+  const clue = community.command('/hint');
+  assert.match(clue, /\$25: C4 — inside a house/);
+  for (const secret of ['23.456', '24.567', 'private-mint', '$100', '$50', 'F1', 'E5']) assert.ok(!clue.includes(secret));
+  assert.equal(community.submit('hunter-one', '/hint', START).ok, true);
+  assert.equal(community.submit('hunter-two', '/hint', START).ok, true);
+  assert.deepEqual(community.chat.filter(message => message.kind === 'bot').map(message => message.text), [clue, clue]);
+  assert.equal(community.submit('unverified', '/hint', START).ok, false);
+  game.packs[0].status = 'carried';
+  assert.match(community.command('/hint'), /No hidden \$25\/\$50/);
+  community.close();
+});
+
+test('shared map grids agree at edges, center and the player screenshot location', () => {
+  assert.equal(mapGrid(-124, -124), 'A1');
+  assert.equal(mapGrid(124, 124), 'F6');
+  assert.equal(mapGrid(0, 0), 'D4');
+  assert.equal(mapGrid(-65, 26), 'B4');
+  assert.equal(mapGrid(NaN, 0), null);
+});
 
 test('Looter announces opening and verified insured value once, without exposing hiding coordinates', () => {
   const community = new Community(new Game({ now: START }));

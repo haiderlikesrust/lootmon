@@ -44,7 +44,11 @@ export function createWorld(scene: THREE.Scene) {
     return mesh(new THREE.CylinderGeometry(top, bottom, h, segments), mat, x, y, z, 1, 1, 1, parent);
   }
   function rock(x: number, z: number, s: number, mat = m.stone) {
-    const r = mesh(sphereGeo, mat, x, s * .28, z, s, s * .65, s * .8); r.rotation.y = x * .37; return r;
+    const r = mesh(sphereGeo, mat, x, s * .28, z, s, s * .65, s * .8); r.rotation.y = x * .37;
+    r.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(r);
+    obstacle((bounds.min.x+bounds.max.x)/2,(bounds.min.z+bounds.max.z)/2,bounds.max.x-bounds.min.x,bounds.max.z-bounds.min.z);
+    return r;
   }
   function obstacle(x: number, z: number, w: number, d: number) { colliders.push({ x, z, w, d }); }
   function beam(a: THREE.Vector3, b: THREE.Vector3, thickness: number, mat: THREE.Material, parent: THREE.Object3D = world) {
@@ -388,7 +392,15 @@ export function createWorld(scene: THREE.Scene) {
     const h=20+random()*43,rad=24+random()*28;
     const hill=mesh(new THREE.ConeGeometry(rad,h,5+(i%3)),i%3===0?farMountainMat:mountainMat,x,h/2-2,z,1,1,.85);hill.rotation.y=random()*3;hill.castShadow=false;
     const foot=mesh(sphereGeo,hillMat,x*.93,2,z*.93,rad*1.4,8+random()*8,rad);foot.castShadow=false;
-    if(h>50) {const snow=mesh(new THREE.ConeGeometry(rad*.18,h*.2,5+(i%3)),m.cream,x,h*.89-2,z,1,1,.85);snow.rotation.y=hill.rotation.y;snow.castShadow=false;}
+    const scenery:THREE.Mesh[]=[hill,foot];
+    if(h>50) {const snow=mesh(new THREE.ConeGeometry(rad*.18,h*.2,5+(i%3)),m.cream,x,h*.89-2,z,1,1,.85);snow.rotation.y=hill.rotation.y;snow.castShadow=false;scenery.push(snow);}
+    // Large foothills previously extended deep inside the playable square.
+    // Place their entire footprint beyond its solid movement boundary so they
+    // cannot overlap homes, bridge approaches, or hidden-card routes.
+    const axis=Math.abs(x)>Math.abs(z)?'x':'z', sign=Math.sign(axis==='x'?x:z);
+    const bounds=new THREE.Box3();for(const object of scenery){object.updateMatrixWorld(true);bounds.expandByObject(object);}
+    const edge=sign>0?bounds.min[axis]:-bounds.max[axis], shift=Math.max(0,126-edge)*sign;
+    for(const object of scenery)object.position[axis]+=shift;
   }
   // Colored pennants animate lightly above the central square.
   for(const x of [-16,16]) {box(x,4.8,17,.17,9.6,.17,m.wood);}

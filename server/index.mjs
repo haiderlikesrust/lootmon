@@ -11,6 +11,7 @@ import { publicSite } from './public-site.mjs';
 import { clientAddress } from './network.mjs';
 import { Community } from './community.mjs';
 import { CoinProfileError } from './coin-profiles.mjs';
+import { CommunityHistory } from './community-history.mjs';
 
 const colliderPath = fileURLToPath(new URL('../shared/world-colliders.json', import.meta.url));
 if (!existsSync(colliderPath)) throw new Error('World collider data is required. Refusing to start an unprotected world.');
@@ -51,7 +52,9 @@ const host = process.env.GAME_HOST || '127.0.0.1';
 const distPath = fileURLToPath(new URL('../dist', import.meta.url));
 const secureCookie = process.env.NODE_ENV === 'production' || auth.domain.startsWith('https://');
 const allowedOrigins = new Set((process.env.APP_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173').split(',').map(value => value.trim()).filter(Boolean));
-community = new Community(game, { onChange(snapshot) {
+const communityHistory = new CommunityHistory(store.path);
+community = new Community(game, { history: communityHistory.load(), onChange(snapshot) {
+  void communityHistory.save(snapshot).catch(() => console.error('Community history could not be saved; gameplay and the prize ledger remain separate.'));
   for (const ws of clients.keys()) send(ws, { type: 'community', ...snapshot });
 } });
 
@@ -310,7 +313,7 @@ async function shutdown(exitCode = 0, reason = 'Server shutting down') {
     process.exit(exitCode);
   }, 3000);
   forceStop.unref();
-  try { await provider.close?.(); } catch { /* Durable jobs resume on restart. */ }
+  try { await Promise.all([provider.close?.(), communityHistory.flush()]); } catch { /* Durable jobs resume on restart. */ }
   store.close();
   clearTimeout(forceStop);
   process.exit(exitCode);

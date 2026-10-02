@@ -1,5 +1,6 @@
 /** North-up cartography over the same orthographic world the player explores. */
-export const MAP_EXTENT = 140;
+import { MAP_EXTENT, mapGrid } from '../shared/map-grid.mjs';
+export { MAP_EXTENT } from '../shared/map-grid.mjs';
 
 export const DISTRICT_INFO = [
   { id: 'hearthwick', number: '01', name: 'Hearthwick', x: 0, z: 6, color: '#edcc8b', subtitle: 'Village center', description: 'Enter the cottages, search the market, and follow the lanes around the fountain.', labelOffset: [0, -18] },
@@ -243,6 +244,16 @@ export function drawIslandMap(canvas: HTMLCanvasElement, options: IslandMapOptio
     ctx.fillText(title, labelX + labelWidth / 2, labelY + labelHeight * .31);
     ctx.fillStyle = carrying ? '#fff3ad' : '#c5ded5'; ctx.font = font(small ? 23 : 10, 600);
     ctx.fillText(subtitle, labelX + labelWidth / 2, labelY + labelHeight * .73);
+  }
+
+  if (position) {
+    const label = `YOU ARE IN ${mapGrid(position.x, position.z)}`;
+    ctx.font = font(small ? 29 : 14, 800);
+    const width = ctx.measureText(label).width + 24 * u;
+    rounded(left + 10 * u, top + 10 * u, width, (small ? 48 : 30) * u, 6 * u);
+    ctx.fillStyle = 'rgba(14,40,31,.96)'; ctx.fill();
+    ctx.fillStyle = '#e2ffa2'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(label, left + 22 * u, top + (small ? 34 : 25) * u);
   }
 
   // Compact compass rose; the projection remains true north at every size.

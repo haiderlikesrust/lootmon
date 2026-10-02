@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createCharacter, loadCharacters, type CharacterInstance, type CharacterVariant } from './characters';
 import { createWorld } from './world';
+import { accelerateCameraGeometry } from './camera-geometry';
 import type {GameState, Player} from './types';
 
 const COLORS:Record<number,number>={25:0xc8ed8a,50:0x72dccc,100:0x8eabff,250:0xd18bfa,500:0xffcf75};
@@ -51,6 +52,9 @@ export class Game {
   private visualJumpHeight=0;
   private serverClockOffset=0;
   private serverClockKnown=false;
+  private cameraDesired=new THREE.Vector3();
+  private cameraDirection=new THREE.Vector3();
+  private cameraHits:THREE.Intersection[]=[];
   constructor(public host:HTMLElement){
     try{const saved=localStorage.getItem('lootmon-mouse-sensitivity');if(saved!==null&&Number.isFinite(Number(saved)))this.sensitivity=THREE.MathUtils.clamp(Number(saved),.25,3);}catch{}
     this.renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
@@ -59,7 +63,7 @@ export class Game {
     host.appendChild(this.renderer.domElement);this.scene.background=new THREE.Color('#9bd9ed');this.scene.fog=new THREE.Fog('#a9d6d9',140,340);
     this.scene.add(new THREE.HemisphereLight(0xd5f5ff,0x8b9c69,2.1));
     const sun=new THREE.DirectionalLight(0xffe0ad,3.25);sun.position.set(-70,105,40);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-135,right:135,top:135,bottom:-135,near:1,far:290});sun.shadow.bias=-.0005;sun.shadow.normalBias=.08;this.scene.add(sun);
-    this.world=createWorld(this.scene);this.cameraObstacles=[...this.scene.children].filter(o=>o instanceof THREE.Mesh||o instanceof THREE.Group);this.pos.copy(this.world.spawn);this.ready=loadCharacters().then(()=>{let saved: string|null=null;try{saved=localStorage.getItem('cards-character')}catch{}this.selectCharacter(['scout','ranger','sage'].includes(saved??'')?saved as CharacterVariant:'scout');});this.lobbyAvatar.position.copy(this.pos);this.lobbyAvatar.rotation.y=.45;this.scene.add(this.lobbyAvatar);this.camera.position.set(this.pos.x+4.8,3.5,this.pos.z+7);
+    this.world=createWorld(this.scene);this.cameraObstacles=[...this.scene.children].filter(o=>o instanceof THREE.Mesh||o instanceof THREE.Group);accelerateCameraGeometry(this.cameraObstacles);this.cameraRay.firstHitOnly=true;this.pos.copy(this.world.spawn);this.ready=loadCharacters().then(()=>{let saved: string|null=null;try{saved=localStorage.getItem('cards-character')}catch{}this.selectCharacter(['scout','ranger','sage'].includes(saved??'')?saved as CharacterVariant:'scout');});this.lobbyAvatar.position.copy(this.pos);this.lobbyAvatar.rotation.y=.45;this.scene.add(this.lobbyAvatar);this.camera.position.set(this.pos.x+4.8,3.5,this.pos.z+7);
     this.controls=new OrbitControls(this.camera,this.renderer.domElement);this.controls.target.set(this.pos.x,1.3,this.pos.z);this.controls.enableDamping=true;this.controls.dampingFactor=.04;this.controls.minDistance=5;this.controls.maxDistance=200;this.controls.maxPolarAngle=Math.PI*.46;this.controls.minPolarAngle=.2;this.controls.autoRotate=false;this.controls.autoRotateSpeed=.16;this.controls.enablePan=true;this.controls.update();
     const resize=()=>{this.camera.aspect=host.clientWidth/host.clientHeight;this.camera.updateProjectionMatrix();this.renderer.setSize(host.clientWidth,host.clientHeight)};new ResizeObserver(resize).observe(host);resize();
     window.addEventListener('keydown',e=>{
@@ -346,10 +350,10 @@ export class Game {
   private followCamera(){
     this.aim.set(this.pos.x,1.45+this.visualJumpHeight*.6,this.pos.z);
     const horizontal=Math.cos(this.renderedPitch)*this.renderedDistance;
-    const desired=new THREE.Vector3(this.pos.x+Math.sin(this.renderedAngle)*horizontal,this.aim.y+Math.sin(this.renderedPitch)*this.renderedDistance,this.pos.z+Math.cos(this.renderedAngle)*horizontal);
-    const ray=desired.clone().sub(this.aim);const distance=ray.length();
+    const desired=this.cameraDesired.set(this.pos.x+Math.sin(this.renderedAngle)*horizontal,this.aim.y+Math.sin(this.renderedPitch)*this.renderedDistance,this.pos.z+Math.cos(this.renderedAngle)*horizontal);
+    const ray=this.cameraDirection.copy(desired).sub(this.aim);const distance=ray.length();
     this.cameraRay.set(this.aim,ray.normalize());this.cameraRay.near=.35;this.cameraRay.far=distance;
-    const wall=this.cameraRay.intersectObjects(this.cameraObstacles,true)[0];
+    this.cameraHits.length=0;const wall=this.cameraRay.intersectObjects(this.cameraObstacles,true,this.cameraHits)[0];
     if(wall)desired.copy(this.aim).addScaledVector(ray,Math.max(.8,wall.distance-.35));
     // Smooth orbit angles, not a chord through the character during a turn.
     this.camera.position.copy(desired);this.camera.lookAt(this.aim);

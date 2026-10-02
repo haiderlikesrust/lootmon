@@ -9,7 +9,7 @@ import * as THREE from 'three';
 // movement/camera/action implementation is used by these offline regressions.
 const source = readFileSync(new URL('../src/game.ts', import.meta.url), 'utf8').replace(/^import .*;\r?$/gm, '');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replace('export class Game', 'class Game');
-const createClass = new Function('THREE', 'OrbitControls', 'createCharacter', 'loadCharacters', 'createWorld', 'window', 'document', 'localStorage', 'HTMLElement', 'ResizeObserver', 'devicePixelRatio', 'performance', `${compiled}; return Game;`);
+const createClass = new Function('THREE', 'accelerateCameraGeometry', 'OrbitControls', 'createCharacter', 'loadCharacters', 'createWorld', 'window', 'document', 'localStorage', 'HTMLElement', 'ResizeObserver', 'devicePixelRatio', 'performance', `${compiled}; return Game;`);
 
 async function fixture() {
   const window = new EventTarget(), document = new EventTarget(), canvas = new EventTarget(), hud = new EventTarget();
@@ -44,7 +44,7 @@ async function fixture() {
     update() { this.camera.lookAt(this.target); }
   }
   const makeCharacter = variant => { const group = new THREE.Group(); group.userData.characterVariant = variant; return { group, update: (_dt, state) => motions.push(state), playOnce: name => gestures.push(name), dispose() {} }; };
-  const Game = createClass({ ...THREE, WebGLRenderer: Renderer }, Controls, makeCharacter, async () => {}, () => ({ spawn: new THREE.Vector3(0, 0, 22), colliders: [], update() {} }), window, document,
+  const Game = createClass({ ...THREE, WebGLRenderer: Renderer }, () => {}, Controls, makeCharacter, async () => {}, () => ({ spawn: new THREE.Vector3(0, 0, 22), colliders: [], update() {} }), window, document,
     { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) }, class {}, class { observe() {} }, 1, { now: () => now });
   const game = new Game({ clientWidth: 1000, clientHeight: 600, appendChild() {} });
   await game.ready;

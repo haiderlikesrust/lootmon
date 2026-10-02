@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import bs58 from 'bs58';
+import { mapGrid } from '../shared/map-grid.mjs';
 
 export const COMMUNITY_LIMITS = Object.freeze({ chat: 120, activity: 20, text: 240, cooldownMs: 3000,
   messagesPerMinute: 8, duplicateMs: 30_000, leaderboard: 100 });
@@ -41,14 +42,18 @@ export function buildLeaderboard(game, now = Date.now()) {
     entries: entries.slice(0, COMMUNITY_LIMITS.leaderboard).map((entry, index) => ({ rank: index + 1, ...entry })) };
 }
 
-/** Volatile conversation, durable confirmed-win history. All author identity and
+/** Persisted conversation and confirmed-win history. All author identity and
  * notification kinds originate here or from committed authority events. */
 export class Community {
-  constructor(game, { onChange = () => {} } = {}) {
+  constructor(game, { onChange = () => {}, history = null } = {}) {
     this.game = game; this.onChange = onChange;
     this.chat = []; this.activity = []; this.rates = new Map();
     this.announcedWins = new Set();
     this.announcedPacks = new Set();
+    const valid = item => item && typeof item.id === 'string' && typeof item.name === 'string' && Number.isSafeInteger(item.time) && item.time >= 0;
+    this.chat = (history?.chat ?? []).filter(item => valid(item) && ['bot','player'].includes(item.kind) && typeof item.text === 'string' && !item.id.startsWith('win:')).slice(-COMMUNITY_LIMITS.chat);
+    this.activity = (history?.activity ?? []).filter(item => valid(item) && ['pickup','stolen','deposit','opening','opened','spawned'].includes(item.kind)).slice(0, COMMUNITY_LIMITS.activity);
+    for (const item of [...this.chat, ...this.activity]) if (item.id.startsWith('pack:')) this.announcedPacks.add(item.id);
     this.runId = randomUUID(); this.sequence = 0;
     this.leaderboardCache = buildLeaderboard(game);
     this.leaderboardDirty = false;
@@ -60,7 +65,12 @@ export class Community {
       }
     }
     confirmed.sort((a, b) => recordedTime(a.reward) - recordedTime(b.reward) || a.reward.id.localeCompare(b.reward.id));
+    const restoredChat = this.chat, restoredActivity = this.activity;
+    this.chat = []; this.activity = [];
     for (const { wallet, reward } of confirmed.slice(-COMMUNITY_LIMITS.chat)) this.recordWin(wallet, reward, false);
+    this.chat.push(...restoredChat); this.activity.push(...restoredActivity);
+    this.chat.sort((a,b) => a.time - b.time); this.chat = this.chat.slice(-COMMUNITY_LIMITS.chat);
+    this.activity.sort((a,b) => b.time - a.time); this.activity = this.activity.slice(0, COMMUNITY_LIMITS.activity);
     // Dedup identity follows durable awards, not the short visible history.
     for (const { reward } of confirmed) this.announcedWins.add(`win:${reward.id}`);
     this.unsubscribe = game.subscribeEvents((event, details) => this.gameEvent(event, details));
@@ -140,7 +150,15 @@ export class Community {
   }
   command(text) {
     const command = text.trim().toLowerCase();
-    if (command === '/help') return 'Commands: /rules — how to play; /base — secure your pack; /drops — funded packs in the world; /leaderboard — confirmed winners.';
+    if (command === '/help') return 'Commands: /hint — map-square clues for $25/$50 packs; /rules — how to play; /base — secure your pack; /drops — funded packs; /leaderboard — confirmed winners.';
+    if (command === '/hint') {
+      // Fixed grid clues are public to every hunter. Never use distance/bearing,
+      // which would let repeated queries triangulate an undiscovered location.
+      const clues = [...new Set(this.game.packs.filter(pack => pack.status === 'hidden' && [25,50].includes(pack.tier) && mapGrid(pack.x, pack.z))
+        .map(pack => `$${pack.tier}: ${mapGrid(pack.x, pack.z)} — ${pack.difficulty === 'interior' ? 'inside a house; go through the doorway' : 'outdoors; search the trees and trail edges'}`))].sort();
+      return clues.length ? `Hunt clues: ${clues.join(' · ')}. Your map shows YOUR current square. Get close for the gold marker, then right-click to grab. Clues are shared with everyone.`
+        : 'No hidden $25/$50 packs to hint at right now. A pack may be carried or waiting to spawn; check /drops. Higher tiers keep their locations secret.';
+    }
     if (command === '/rules') return 'Hold at least 0.25% to hunt. Right-click nearby packs or carriers. Bring a pack to your base to secure it. Above 2% unlocks tools for 8 seconds, with a 45-second cooldown. A win is confirmed only after wallet transfer.';
     if (command === '/base') return 'Your assigned home beacon is marked YOUR BASE on the map. Carry a pack within 4 metres to deposit it. Deposit reserves your prize; wallet transfer confirmation makes it a win.';
     if (command === '/drops') {
@@ -152,7 +170,7 @@ export class Community {
       return top.length ? `Confirmed winners: ${top.map((entry, index) => `${index + 1}. ${entry.name} (${entry.wins} ${entry.wins === 1 ? 'win' : 'wins'})`).join(' · ')}. Open Leaderboard for the full standings.`
         : 'No confirmed wins yet. Deposits appear as pending until the prize transfer is confirmed.';
     }
-    return 'I can help with /help, /rules, /base, /drops and /leaderboard. I never request a seed phrase or a payment in chat.';
+    return 'I can help with /hint, /help, /rules, /base, /drops and /leaderboard. I never request a seed phrase or a payment in chat.';
   }
   close() { this.unsubscribe(); }
 }

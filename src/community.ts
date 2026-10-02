@@ -37,7 +37,7 @@ export function createCommunityUI(options:Options){
   const form=node('form','community-composer'),input=node('input','community-input');input.id='community-chat-input';input.type='text';input.maxLength=240;input.autocomplete='off';input.placeholder='Message the island…';input.setAttribute('aria-label','Message island chat');
   const submit=node('button','community-send','↵');submit.type='submit';submit.title='Send message';submit.setAttribute('aria-label','Send message');form.append(input,submit);
   const hint=node('p','community-hint','Join a verified live hunt to send messages.');hint.setAttribute('role','status');
-  const commands=node('div','community-commands');for(const command of ['/help','/rules','/base','/drops','/leaderboard'])commands.append(button('',command,()=>{if(!options.getSession().canChat)return;options.onFocus();input.value=command;input.focus();}));
+  const commands=node('div','community-commands');for(const command of ['/hint','/help','/rules','/base','/drops','/leaderboard'])commands.append(button('',command,()=>{if(!options.getSession().canChat)return;options.onFocus();input.value=command;input.focus();}));
   panel.append(header,messages,form,commands,hint);dock.append(toggle,panel);options.host.append(dock);
 
   const feed=node('section','activity-feed');feed.setAttribute('aria-label','Recent island activity');

@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { MAP_EXTENT, mapGrid } from '../shared/map-grid.mjs';
 
-const source = readFileSync(new URL('../src/map.ts', import.meta.url), 'utf8').replace(/export /g, '');
+const source = readFileSync(new URL('../src/map.ts', import.meta.url), 'utf8').replace(/^(import|export \{).*$/gm, '').replace(/export /g, '');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-const drawIslandMap = new Function(`${compiled}; return drawIslandMap;`)();
+const drawIslandMap = new Function('MAP_EXTENT', 'mapGrid', `${compiled}; return drawIslandMap;`)(MAP_EXTENT, mapGrid);
 
 test('both maps show only current disclosed packs and clear them when visibility is withdrawn', () => {
   for (const small of [true, false]) {
@@ -21,6 +22,7 @@ test('both maps show only current disclosed packs and clear them when visibility
       packs: [{ id:'known', x:8, z:8, tier:25, status:'hidden' }, { id:'secured', x:8, z:8, tier:500, status:'secured' }] };
     drawIslandMap(canvas, options);
     assert.ok(labels.includes('$25'));
+    assert.ok(labels.includes('YOU ARE IN D4'));
     assert.ok(!labels.includes('$500'));
     labels.length = 0;
     drawIslandMap(canvas, { ...options, packs: [] });
