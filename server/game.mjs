@@ -1,4 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
+import { collidesWithWorld } from '../shared/collision-index.mjs';
 import { HOME_LAYOUT_VERSION } from '../shared/world-layout.mjs';
 import { getWorldPlacement, SPAWN_POLICY, SPAWN_REUSE_MS, MAX_PLAYERS } from './world-placement.mjs';
 
@@ -227,11 +228,7 @@ export class Game {
   }
   collides(x, z, radius = GAME_RULES.playerRadius) {
     if (Math.abs(x) > GAME_RULES.worldRadius || Math.abs(z) > GAME_RULES.worldRadius) return true;
-    return this.colliders.some(box => {
-      const nearX = clamp(x, box.x - (box.w ?? box.width) / 2, box.x + (box.w ?? box.width) / 2);
-      const nearZ = clamp(z, box.z - (box.d ?? box.depth) / 2, box.z + (box.d ?? box.depth) / 2);
-      return (x - nearX) ** 2 + (z - nearZ) ** 2 < radius ** 2;
-    });
+    return collidesWithWorld(this.colliders, x, z, radius);
   }
   clearLine(from, to) {
     const steps = Math.max(1, Math.ceil(distance(from, to) / 0.5));

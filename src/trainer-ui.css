@@ -60,3 +60,5 @@
 .collection-list span small{display:block;font-size:10px;line-height:1.6;margin-top:4px;color:#7c91ab}
 
 @media(max-width:760px){.exploration-hud{top:237px}.compass,.playing .compass{top:167px}}
+/* The picker uses text labels from detected wallets, never injected HTML. */
+.wallet-options{display:grid;gap:10px;margin:20px 0}.wallet-option{display:block;width:100%;padding:15px 18px;text-align:left;border:2px solid #aac5e4;border-radius:10px;background:#e8f2ff;color:#2e578b;font:800 15px 'Trebuchet MS',sans-serif;box-shadow:0 3px #86a6ca;cursor:pointer}.wallet-option:hover,.wallet-option:focus-visible{background:#fff0b1;border-color:#d3b64e;outline:2px solid #3d72a7;outline-offset:3px}.wallet-option:active{transform:translateY(2px);box-shadow:0 1px #86a6ca}

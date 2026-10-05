@@ -13,9 +13,10 @@ export function startNavigationHUD(game: Game, getBase: () => { x: number; z: nu
     const tick = document.createElement('span');
     tick.className = 'compass-tick'; tape.append(tick); return tick;
   });
-  let lastStats = 0;
+  let lastStats = 0, lastPaint = -Infinity;
   const frame = (now: number) => {
-    if (!document.hidden) {
+    if (!document.hidden && now-lastPaint >= 1000/30) {
+      lastPaint = now;
       const bearing = game.compassHeadingDegrees;
       const center = Math.floor(bearing / 15);
       ticks.forEach((tick, index) => {

@@ -251,7 +251,11 @@ let broadcastFrame = 0;
 const ticker = setInterval(() => {
   const now = Date.now();
   game.tick(now);
-  if (++broadcastFrame % 2 === 0) for (const [ws, client] of clients) send(ws, { type: 'state', state: game.state(client.joined ? client.id : null, now) });
+  // State snapshots are replaceable. A slow connection gets the next fresh
+  // snapshot after draining, instead of a queue of stale movement frames.
+  if (++broadcastFrame % 2 === 0) for (const [ws, client] of clients) {
+    if (ws.readyState === WebSocket.OPEN && ws.bufferedAmount === 0) send(ws, { type: 'state', state: game.state(client.joined ? client.id : null, now) });
+  }
 }, 50);
 const heartbeat = setInterval(() => {
   auth.prune();

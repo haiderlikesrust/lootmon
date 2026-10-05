@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import * as THREE from 'three';
+import { collidesWithWorld } from '../shared/collision-index.mjs';
 
 // Run the actual Game constructor, registered browser handlers and camera math.
 // Only WebGL, asset loading and browser surfaces are replaced; no copy of the
 // movement/camera/action implementation is used by these offline regressions.
 const source = readFileSync(new URL('../src/game.ts', import.meta.url), 'utf8').replace(/^import .*;\r?$/gm, '');
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText.replace('export class Game', 'class Game');
-const createClass = new Function('THREE', 'accelerateCameraGeometry', 'OrbitControls', 'createCharacter', 'loadCharacters', 'createWorld', 'window', 'document', 'localStorage', 'HTMLElement', 'ResizeObserver', 'devicePixelRatio', 'performance', `${compiled}; return Game;`);
+const createClass = new Function('collidesWithWorld', 'THREE', 'accelerateCameraGeometry', 'OrbitControls', 'createCharacter', 'loadCharacters', 'createWorld', 'window', 'document', 'localStorage', 'HTMLElement', 'ResizeObserver', 'devicePixelRatio', 'performance', `${compiled}; return Game;`);
 
 async function fixture() {
   const window = new EventTarget(), document = new EventTarget(), canvas = new EventTarget(), hud = new EventTarget();
@@ -44,7 +45,7 @@ async function fixture() {
     update() { this.camera.lookAt(this.target); }
   }
   const makeCharacter = variant => { const group = new THREE.Group(); group.userData.characterVariant = variant; return { group, update: (_dt, state) => motions.push(state), playOnce: name => gestures.push(name), dispose() {} }; };
-  const Game = createClass({ ...THREE, WebGLRenderer: Renderer }, () => {}, Controls, makeCharacter, async () => {}, () => ({ spawn: new THREE.Vector3(0, 0, 22), colliders: [], update() {} }), window, document,
+  const Game = createClass(collidesWithWorld, { ...THREE, WebGLRenderer: Renderer }, () => {}, Controls, makeCharacter, async () => {}, () => ({ spawn: new THREE.Vector3(0, 0, 22), colliders: [], update() {} }), window, document,
     { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value) }, class {}, class { observe() {} }, 1, { now: () => now });
   const game = new Game({ clientWidth: 1000, clientHeight: 600, appendChild() {} });
   await game.ready;
@@ -59,6 +60,23 @@ async function fixture() {
   };
 }
 function emit(target, type, values = {}) { const event = new Event(type, { cancelable: true }); Object.assign(event, values); target.dispatchEvent(event); return event; }
+
+test('hidden tabs pause rendering and movement, and resume normally without a time jump', async () => {
+  const f = await fixture();
+  await f.game.enterExplore();
+  let renders = 0;
+  f.game.renderer.render = () => renders++;
+  const start = f.game.pos.clone();
+  f.document.hidden = true;
+  emit(f.document, 'visibilitychange');
+  f.frame(100);
+  assert.equal(renders, 0);
+  assert.deepEqual(f.game.pos, start);
+  f.document.hidden = false;
+  f.frame();
+  assert.equal(renders, 1);
+  assert.deepEqual(f.game.pos, start);
+});
 function rightPress(canvas) {
   emit(canvas, 'pointerdown', { pointerType: 'mouse', pointerId: 1, button: 2, buttons: 2 });
   const down = emit(canvas, 'mousedown', { button: 2, buttons: 2 });

@@ -6,6 +6,7 @@ import {createCommunityUI} from './community';
 import { CHARACTER_OPTIONS, type CharacterVariant } from './characters';
 import {drawIslandMap,DISTRICT_INFO} from './map';
 import {GameAudio} from './audio';
+import {walletChoices,watchWallets,type WalletChoice,type WalletConnection} from './wallets';
 import {createIcons, Compass, Wallet, ArrowUpRight, Layers, Map as MapIcon, Backpack, Settings2, CircleHelp, X, ShieldCheck, Radio, Zap, Home, LockKeyhole, Gem, ChevronRight, Trophy, Volume2, Crosshair, Users, Clock3, Copy, Check, Maximize2, Leaf, ExternalLink, LogOut} from 'lucide';
 import {Game} from './game';
 import {startNavigationHUD} from './navigation-hud';
@@ -59,7 +60,7 @@ const game=new Game($('#world'));
 const audio=new GameAudio();game.onStep=sprint=>audio.step(sprint);
 game.ready.then(()=>{$('#loading-world').classList.add('loaded');syncCharacters()}).catch(error=>{$('#loading-world').innerHTML=`<p>${esc(error.message)}</p><button id="retry-assets" class="primary-button">Retry character loading</button>`;$('#loading-world').style.pointerEvents='auto';$('#retry-assets').onclick=()=>location.reload();});
 
-let config:Config={},state:GameState={players:[],packs:[],events:[],treasury:{}},myId:string|null=null,walletAddress='',walletProvider:any=null,socket:WebSocket|null=null,connecting=false,sessionReady=false;let collection:Reward[]=[];
+let config:Config={},state:GameState={players:[],packs:[],events:[],treasury:{}},myId:string|null=null,walletAddress='',walletProvider:WalletConnection|null=null,socket:WebSocket|null=null,connecting=false,sessionReady=false;let collection:Reward[]=[];
 let authRevision=0;
 const community=createCommunityUI({
   host:$('.world-shell'),
@@ -68,7 +69,8 @@ const community=createCommunityUI({
   onFocus:()=>{game.releasePointer();game.clearInput();},
   onRoute:leaderboard=>{$('#modal').close();for(const button of document.querySelectorAll<HTMLElement>('[data-tab]'))button.classList.toggle('active',button.dataset.tab===(leaderboard?'leaderboard':'play'));}
 });
-const cash=(v?:number)=>typeof v==='number'?new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(v):'—';
+const currencyFormat=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0});
+const cash=(v?:number)=>typeof v==='number'?currencyFormat.format(v):'—';
 const esc=(s:unknown)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 function toast(message:string){$('#toast').textContent=message;$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=window.setTimeout(()=>$('#toast').classList.remove('visible'),4500)}let toastTimer=0;
 function modal(title:string,body:string){game.releasePointer();$('#modal').classList.remove('map-dialog');$('#modal-body').innerHTML=`<h2>${title}</h2>${body}`;$('#modal').showModal();game.clearInput();refreshIcons()}
@@ -114,16 +116,50 @@ async function measurePing(){
 }
 setInterval(()=>void measurePing(),3000);void measurePing();
 startNavigationHUD(game,()=>game.exploring?game.world.spawn:state.players.find(player=>player.id===myId)?.base);
-async function connectWallet(enter=false){if(connecting)return;if(!(config.configured??config.authConfigured)){showLaunch();return;}connecting=true;
-  // A new wallet proof replaces the entire local identity, including its socket.
-  // Ignore any older restore request that finishes while the wallet is signing.
+let unwatchWallet=()=>{};
+let pendingLogout:Promise<unknown>=Promise.resolve();
+function clearWalletIdentity(){
   ++authRevision;sessionReady=false;leave();walletAddress='';collection=[];lastCollectionSize=0;
-  $('#collection-count').textContent='0';$('#wallet-button span').textContent='Connect wallet';$('#enter-button').innerHTML=`${icon('wallet')}Connect to play ${icon('arrow-up-right')}`;$('#entry-note').textContent='Verify your wallet to enter the hunt';refreshIcons();
-try{const w=window as any;walletProvider=w.phantom?.solana??w.solana??w.solflare;if(!walletProvider){modal('Bring your wallet.',`<p>Use a Solana wallet to verify your holdings. Install Phantom or Solflare, then return to the island.</p><div class="dialog-links"><a href="https://phantom.com/" target="_blank" rel="noopener noreferrer">Phantom ${icon('external-link')}</a><a href="https://solflare.com/" target="_blank" rel="noopener noreferrer">Solflare ${icon('external-link')}</a></div>`);return;}
-  const connected=await walletProvider.connect();const address=connected.publicKey.toString();const challenge=await api('/api/auth/challenge',{wallet:address});const signed=await walletProvider.signMessage(new TextEncoder().encode(challenge.message),'utf8');const signature=btoa(String.fromCharCode(...new Uint8Array(signed.signature??signed)));const verified=await api('/api/auth/verify',{wallet:address,nonce:challenge.nonce,signature});
-  if(verified.player?.wallet!==address)throw new Error('Wallet verification returned a different account. Please reconnect.');
-  walletAddress=address;sessionReady=true;collection=verified.collection??[];$('#collection-count').textContent=String(collection.length);$('#wallet-button span').textContent=walletAddress.slice(0,4)+'…'+walletAddress.slice(-4);$('#enter-button').innerHTML=`${icon('compass')}Enter the wilds ${icon('arrow-up-right')}`;$('#entry-note').textContent=`${Number(verified.player?.holdPercent??0).toFixed(3)}% held · Ownership verified`;refreshIcons();community.refreshSession();if(enter)join();else toast('Wallet verified. Your expedition is ready.');
-}catch(error){toast(error instanceof Error?error.message:'Wallet connection was cancelled.')}finally{connecting=false}}
+  $('#collection-count').textContent='0';$('#wallet-button span').textContent='Connect wallet';$('#enter-button').innerHTML=`${icon('wallet')}Connect to play ${icon('arrow-up-right')}`;$('#entry-note').textContent='Verify your wallet to enter the hunt';refreshIcons();community.refreshSession();
+}
+function walletChanged(){
+  unwatchWallet();unwatchWallet=()=>{};walletProvider=null;clearWalletIdentity();
+  pendingLogout=api('/api/auth/logout',{}).catch(()=>{});
+  toast('Wallet disconnected or account changed. Connect again to verify your holdings.');
+}
+function chooseWallet(enter:boolean){
+  modal('Choose your wallet', '<p>Connect a Solana wallet and sign a message to verify ownership. Signing in does not request a payment.</p><div class="wallet-options" id="wallet-options"></div><p class="small-muted">On mobile, open Lootmon inside your wallet’s browser.</p><div class="dialog-links"><a href="https://phantom.com/" target="_blank" rel="noopener noreferrer">Get Phantom ↗</a><a href="https://solflare.com/" target="_blank" rel="noopener noreferrer">Get Solflare ↗</a></div>');
+  const list=$('#wallet-options');
+  const render=()=>{
+    const choices=walletChoices();list.replaceChildren();
+    if(!choices.length){const empty=document.createElement('p');empty.textContent='No compatible wallet detected. Install a wallet, or open this site in its mobile browser.';list.append(empty);}
+    for(const choice of choices){const button=document.createElement('button');button.className='wallet-option';button.type='button';button.textContent=choice.name+' · Connect';button.onclick=()=>{$('#modal').close();void connectWallet(enter,choice);};list.append(button);}
+  };
+  render();const stop=watchWallets(render);$('#modal').addEventListener('close',stop,{once:true});
+}
+async function connectWallet(enter=false,choice?:WalletChoice){
+  if(connecting)return;if(!(config.configured??config.authConfigured)){showLaunch();return;}
+  if(!choice){chooseWallet(enter);return;}
+  connecting=true;unwatchWallet();unwatchWallet=()=>{};walletProvider=null;clearWalletIdentity();const revision=authRevision;
+  try{
+    await pendingLogout;
+    await api('/api/auth/logout',{});
+    const provider=await choice.connect();
+    if(revision!==authRevision)return;
+    walletProvider=provider;unwatchWallet=provider.onChange(walletChanged);
+    const address=provider.address;
+    const challenge=await api('/api/auth/challenge',{wallet:address});
+    if(revision!==authRevision)return;
+    const signed=await provider.signMessage(new TextEncoder().encode(challenge.message));
+    if(revision!==authRevision)return;
+    const signature=btoa(String.fromCharCode(...signed));
+    const verified=await api('/api/auth/verify',{wallet:address,nonce:challenge.nonce,signature});
+    if(revision!==authRevision){await api('/api/auth/logout',{}).catch(()=>{});return;}
+    if(verified.player?.wallet!==address)throw new Error('Wallet verification returned a different account. Please reconnect.');
+    walletAddress=address;sessionReady=true;collection=verified.collection??[];$('#collection-count').textContent=String(collection.length);$('#wallet-button span').textContent=walletAddress.slice(0,4)+'…'+walletAddress.slice(-4);$('#enter-button').innerHTML=`${icon('compass')}Enter the wilds ${icon('arrow-up-right')}`;$('#entry-note').textContent=`${Number(verified.player?.holdPercent??0).toFixed(3)}% held · Ownership verified`;refreshIcons();community.refreshSession();if(enter)join();else toast('Wallet verified. Your expedition is ready.');
+  }catch(error){unwatchWallet();unwatchWallet=()=>{};walletProvider=null;toast(error instanceof Error?error.message:'Wallet connection was cancelled.');}
+  finally{connecting=false;}
+}
 function showLaunch(){modal('Ready for the first drop.',`<p>The island is open to explore. Live entry unlocks when the game token and reward treasury are configured.</p><div class="launch-check"><span>${icon('check')}3D island & extraction rules</span><span>${icon('check')}Wallet ownership verification</span><span>${icon('lock-keyhole')}Pump game-token mint</span><span>${icon('lock-keyhole')}Funded treasury & card provider</span></div><p class="small-muted">The $CARDS payment token is separate from the game token you will hold. Entry requires at least 0.25% of the game token supply. No funds or rewards are simulated.</p><button class="primary-button" id="explore-modal">Explore the island ${icon('compass')}</button>`);$('#explore-modal').onclick=()=>{$('#modal').close();void exploreIsland()};refreshIcons()}
 $('#wallet-button').onclick=()=>connectWallet();$('#enter-button').onclick=()=>!(config.configured??config.authConfigured)?void exploreIsland():sessionReady?join():void connectWallet(true);$('#explore-button').onclick=()=>void exploreIsland();
 function join(){
@@ -157,7 +193,7 @@ function join(){
   ws.onerror=()=>{if(socket===ws)toast('Unable to join. Check your connection and verified holdings.');};
 }
 function send(message:unknown){if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify(message))}
-game.onMove=(x,z,yaw,sprinting)=>send({type:'move',x,z,yaw,sprinting});game.onInteract=()=>send({type:'interact'});game.onAbility=ability=>send({type:'ability',ability});game.onJump=()=>send({type:'jump'});
+game.onMove=(x,z,yaw,sprinting)=>{if(socket?.bufferedAmount===0)send({type:'move',x,z,yaw,sprinting});};game.onInteract=()=>send({type:'interact'});game.onAbility=ability=>send({type:'ability',ability});game.onJump=()=>send({type:'jump'});
 function leave(close=true){
   const prior=socket;socket=null;
   if(prior){prior.onopen=null;prior.onmessage=null;prior.onclose=null;prior.onerror=null;if(close&&prior.readyState<=WebSocket.OPEN)prior.close();}
@@ -185,7 +221,7 @@ game.onExitExplore=()=>leave();
 game.onExploreAction=action=>toast(action==='interact'?'Right-click to snatch when you are close to a rival carrying a pack in a live hunt.':'Join the holder hunt to use timed tools.');
 game.onMouseCaptureChange=()=>{const hint=$('#camera-hint');hint.innerHTML=game.mouseLookMode==='captured'?'Move mouse to look · <kbd>ESC</kbd> Cursor':game.mouseLookMode==='hover'?'Move mouse · Hold near edge to keep turning · <kbd>ESC</kbd> Cursor':'Click island to look · <kbd>ESC</kbd> Return';};
 game.onMouseCaptureError=()=>toast('Move your mouse to look. Hold near an island edge to keep turning. Adjust sensitivity in Settings.');
-function refreshExplorerMap(){if(!game.controlling)return;if(game.exploring){const p=game.explorationPosition;$('#explorer-coordinates').textContent=`Position ${Math.round(p.x)}, ${Math.round(p.z)} · Return to the camp flag`; }drawMap($('#mini-canvas'),true);const large=document.querySelector<HTMLCanvasElement>('#large-map');if(large&&$('#modal').open)drawMap(large,false,document.querySelector<HTMLElement>('[data-district].selected')?.dataset.district??null);}
+function refreshExplorerMap(){if(!game.controlling||document.hidden)return;if(game.exploring){const p=game.explorationPosition;$('#explorer-coordinates').textContent=`Position ${Math.round(p.x)}, ${Math.round(p.z)} · Return to the camp flag`; }drawMap($('#mini-canvas'),true);const large=document.querySelector<HTMLCanvasElement>('#large-map');if(large&&$('#modal').open)drawMap(large,false,document.querySelector<HTMLElement>('[data-district].selected')?.dataset.district??null);}
 setInterval(refreshExplorerMap,100);
 for(const button of document.querySelectorAll<HTMLButtonElement>('[data-control]')){
   const code=button.dataset.control!;
@@ -197,7 +233,7 @@ for(const button of document.querySelectorAll<HTMLButtonElement>('[data-control]
 }
 const discoveredPacks=new Set<string>();
 let lastCarryMarkup='';
-let lastCollectionSize=0;function updateHUD(){const me=state.players.find(p=>p.id===myId);if(!me)return;$('#player-name').textContent=me.name;$('#player-tier').textContent=me.elite?'ELITE COLLECTOR':'HOLDER';$('#online-count').textContent=`${state.players.length} collectors`;
+let lastCollectionSize=0;function updateHUD(){if(document.hidden)return;const me=state.players.find(p=>p.id===myId);if(!me)return;$('#player-name').textContent=me.name;$('#player-tier').textContent=me.elite?'ELITE COLLECTOR':'HOLDER';$('#online-count').textContent=`${state.players.length} collectors`;
   const visible=state.packs.filter(p=>p.status==='hidden').sort((a,b)=>Math.hypot(me.x-a.x,me.z-a.z)-Math.hypot(me.x-b.x,me.z-b.z));
   const spotted=visible.find(p=>!discoveredPacks.has(p.id));
   for(const p of visible)discoveredPacks.add(p.id);

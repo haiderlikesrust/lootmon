@@ -8,6 +8,10 @@ Choose **Explore island** to walk the island with your selected character: WASD 
 
 There are no seeded balances, invented prizes, or practice opponents. Tests use isolated fixtures and mocked provider/RPC responses; they do not place orders or transfer assets.
 
+**Wallets:** Connect wallet opens a picker instead of automatically choosing an extension. Solflare, Phantom and Backpack have injected-provider support; compatible Solana Wallet Standard wallets with mainnet message signing are discovered automatically. Sign-in uses a server challenge, never a payment request. Account changes or disconnects during a connected session clear the local identity and revoke its session. On mobile, open Lootmon inside the wallet's browser; external-app deep-link pairing is not implemented. No wallet-specific environment variables are needed.
+
+**Performance:** Camera rays use a geometry index, and client movement/server sight checks share a spatial obstacle lookup. Slow connections skip replaceable state/movement snapshots instead of accumulating old frames; reward actions keep their existing authority checks. Hidden tabs stop rendering and map redraws. Collision parity and camera hit correctness are regression-tested against the authored island; CPU benchmarks do not guarantee a specific browser FPS or network ping.
+
 ## Run locally
 
 Use **Node.js 22.13.0 or newer** and npm.

@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createCharacter, loadCharacters, type CharacterInstance, type CharacterVariant } from './characters';
 import { createWorld } from './world';
 import { accelerateCameraGeometry } from './camera-geometry';
+import { collidesWithWorld } from '../shared/collision-index.mjs';
 import type {GameState, Player} from './types';
 
 const COLORS:Record<number,number>={25:0xc8ed8a,50:0x72dccc,100:0x8eabff,250:0xd18bfa,500:0xffcf75};
@@ -55,6 +56,7 @@ export class Game {
   private cameraDesired=new THREE.Vector3();
   private cameraDirection=new THREE.Vector3();
   private cameraHits:THREE.Intersection[]=[];
+  private avatarTarget=new THREE.Vector3();
   constructor(public host:HTMLElement){
     try{const saved=localStorage.getItem('lootmon-mouse-sensitivity');if(saved!==null&&Number.isFinite(Number(saved)))this.sensitivity=THREE.MathUtils.clamp(Number(saved),.25,3);}catch{}
     this.renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
@@ -337,7 +339,7 @@ export class Game {
     const pointer=new THREE.Mesh(new THREE.ConeGeometry(.3,.65,4),new THREE.MeshBasicMaterial({color:0xffdf67,depthTest:false,depthWrite:false}));pointer.rotation.z=Math.PI;pointer.position.y=1.4;pointer.renderOrder=8;pointer.name='DiscoveryPointer';g.add(pointer);
     return g;}
   makeBase(color:number){const g=new THREE.Group();const ring=new THREE.Mesh(new THREE.RingGeometry(3.3,3.65,64),new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide,transparent:true,opacity:.65}));ring.rotation.x=-Math.PI/2;ring.position.y=.06;g.add(ring);const box=new THREE.Mesh(new THREE.BoxGeometry(1.2,.7,.8),new THREE.MeshStandardMaterial({color:0x374b40,metalness:.25,roughness:.6}));box.position.set(0,.35,0);box.castShadow=true;g.add(box);const strip=new THREE.Mesh(new THREE.BoxGeometry(1.23,.1,.83),new THREE.MeshStandardMaterial({color,emissive:color,emissiveIntensity:.4}));strip.position.y=.58;g.add(strip);return g;}
-  blocked(x:number,z:number){return Math.abs(x)>124||Math.abs(z)>124||this.world.colliders.some(c=>{const nx=Math.max(c.x-c.w/2,Math.min(x,c.x+c.w/2));const nz=Math.max(c.z-c.d/2,Math.min(z,c.z+c.d/2));return (x-nx)**2+(z-nz)**2<.6**2;})}
+  blocked(x:number,z:number){return Math.abs(x)>124||Math.abs(z)>124||collidesWithWorld(this.world.colliders,x,z,.6)}
   private moveBy(x:number,z:number){
     const startX=this.pos.x,startZ=this.pos.z;
     const steps=Math.max(1,Math.ceil(Math.hypot(x,z)/.24));
@@ -358,7 +360,7 @@ export class Game {
     // Smooth orbit angles, not a chord through the character during a turn.
     this.camera.position.copy(desired);this.camera.lookAt(this.aim);
   }
-  frame(){const dt=Math.min(this.clock.getDelta(),.05);this.elapsed+=dt;const t=this.elapsed;this.world.update(t);if(!this.controlling)this.lobbyCharacter?.update(dt,{moving:false,sprinting:false,carrying:false});
+  frame(){const elapsed=this.clock.getDelta();if(document.hidden){this.fpsSampleStartedAt=0;return;}const dt=Math.min(elapsed,.05);this.elapsed+=dt;const t=this.elapsed;this.world.update(t);if(!this.controlling)this.lobbyCharacter?.update(dt,{moving:false,sprinting:false,carrying:false});
     const me=this.state?.players.find(p=>p.id===this.id);let moving=false;
     const jumpNow=this.networkNow();
     this.visualJumpHeight=this.controlling?this.jumpHeight(this.localJumpStartedAt,this.localJumpUntil,jumpNow):0;
@@ -388,12 +390,12 @@ export class Game {
     if(this.state&&!this.exploring){const ids=new Set(this.state.players.map(p=>p.id));for(const id of this.avatarMeshes.keys())if(!ids.has(id)){this.removeAvatar(id);const b=this.bases.get(id);if(b)this.removeWorldObject(b);this.bases.delete(id);}
       for(const p of this.state.players){let g=this.avatarMeshes.get(p.id);if(g&&g.userData.characterVariant!==(p.character??'scout')){this.removeAvatar(p.id);g=undefined;}if(!g){g=this.makeAvatar(p.id,p.character??'scout',p.id===this.id?0xd7f887:0xe39a77);g.position.set(p.x,0,p.z);g.rotation.y=p.yaw;this.scene.add(g);this.avatarMeshes.set(p.id,g);if(!this.bases.has(p.id)){const b=this.makeBase(p.id===this.id?0xd7f887:0xe39a77);this.scene.add(b);this.bases.set(p.id,b);}}
         this.bases.get(p.id)?.position.set(p.base.x,0,p.base.z);
-        const local=p.id===this.id;const jump=p as Player&JumpState;const height=local?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);const target=local?new THREE.Vector3(this.pos.x,this.pos.y+height,this.pos.z):new THREE.Vector3(p.x,height,p.z);const dist=Math.hypot(g.position.x-target.x,g.position.z-target.z);g.position.lerp(target,local?1:Math.min(1,dt*13));const desiredYaw=local?this.yaw:p.yaw;g.rotation.y+=Math.atan2(Math.sin(desiredYaw-g.rotation.y),Math.cos(desiredYaw-g.rotation.y))*Math.min(1,dt*15);const walk=local?moving:dist>.08;this.characters.get(p.id)?.update(dt,{moving:walk,sprinting:local?(this.keys.has('ShiftLeft')||this.keys.has('ShiftRight')):dist>1,carrying:!!p.carrying});
+        const local=p.id===this.id;const jump=p as Player&JumpState;const height=local?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);const target=local?this.avatarTarget.set(this.pos.x,this.pos.y+height,this.pos.z):this.avatarTarget.set(p.x,height,p.z);const dist=Math.hypot(g.position.x-target.x,g.position.z-target.z);g.position.lerp(target,local?1:Math.min(1,dt*13));const desiredYaw=local?this.yaw:p.yaw;g.rotation.y+=Math.atan2(Math.sin(desiredYaw-g.rotation.y),Math.cos(desiredYaw-g.rotation.y))*Math.min(1,dt*15);const walk=local?moving:dist>.08;this.characters.get(p.id)?.update(dt,{moving:walk,sprinting:local?(this.keys.has('ShiftLeft')||this.keys.has('ShiftRight')):dist>1,carrying:!!p.carrying});
       }
       const packIds=new Set(this.state.packs.filter(p=>p.status!=='secured').map(p=>p.id));for(const [id,g]of this.packMeshes)if(!packIds.has(id)){this.removeWorldObject(g);this.packMeshes.delete(id);}
       // The authority already filters hidden packs by radius and sight lines.
       // Re-filtering with the client's clock can hide valid radar discoveries.
-      for(const p of this.state.packs){if(p.status==='secured')continue;let g=this.packMeshes.get(p.id);if(!g){g=this.makePack(p.tier);this.packMeshes.set(p.id,g);this.scene.add(g);}const carrier=this.state.players.find(pl=>pl.id===p.carrierId||pl.carrying===p.id);const pointer=g.getObjectByName('DiscoveryPointer');if(pointer)pointer.visible=!carrier;if(carrier){const c=carrier.id===this.id?this.pos:new THREE.Vector3(carrier.x,0,carrier.z);const jump=carrier as Player&JumpState;const height=carrier.id===this.id?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);g.position.set(c.x,2.8+height+Math.sin(t*3)*.06,c.z);g.visible=true;}else{g.position.set(p.x,1.15+Math.sin(t*2)*.13,p.z);g.visible=!!me;}g.rotation.y=t*.55;}
+      for(const p of this.state.packs){if(p.status==='secured')continue;let g=this.packMeshes.get(p.id);if(!g){g=this.makePack(p.tier);this.packMeshes.set(p.id,g);this.scene.add(g);}const carrier=this.state.players.find(pl=>pl.id===p.carrierId||pl.carrying===p.id);const pointer=g.getObjectByName('DiscoveryPointer');if(pointer)pointer.visible=!carrier;if(carrier){const c=carrier.id===this.id?this.pos:carrier;const jump=carrier as Player&JumpState;const height=carrier.id===this.id?this.visualJumpHeight:this.jumpHeight(jump.jumpStartedAt,jump.jumpUntil,jumpNow);g.position.set(c.x,2.8+height+Math.sin(t*3)*.06,c.z);g.visible=true;}else{g.position.set(p.x,1.15+Math.sin(t*2)*.13,p.z);g.visible=!!me;}g.rotation.y=t*.55;}
     }
     this.updateCompassHeading();
     this.renderer.render(this.scene,this.camera);
