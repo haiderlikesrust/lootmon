@@ -10,7 +10,8 @@ import { createProvider } from './provider.mjs';
 import { publicSite } from './public-site.mjs';
 import { clientAddress } from './network.mjs';
 import { Community } from './community.mjs';
-import { CoinProfileError } from './coin-profiles.mjs';
+import { startupDiagnostic } from './startup-diagnostics.mjs';
+import { inspectConfiguration } from '../scripts/preflight.mjs';
 import { CommunityHistory } from './community-history.mjs';
 
 const colliderPath = fileURLToPath(new URL('../shared/world-colliders.json', import.meta.url));
@@ -24,6 +25,7 @@ let community;
 let closing = false;
 let authorityLost = false;
 let stopForAuthorityLoss = null;
+let startupStage = 'treasury';
 try {
   provider = await createProvider({ env: process.env, onActivity(event) { community?.packEvent(event); }, onAuthorityLost() {
     authorityLost = true;
@@ -34,12 +36,14 @@ try {
     store.close();
     process.exit(1);
   }
+  startupStage = 'world';
   store.selectMint(process.env.MEMECOIN_MINT, provider.legacyMint);
   game = new Game({ store, colliders: Array.isArray(colliderData) ? colliderData : colliderData.colliders ?? [] });
 } catch (error) {
   // Provider/driver errors can contain connection details. Startup diagnostics
   // intentionally omit their raw messages, stacks and environment values.
-  console.error(error instanceof CoinProfileError ? error.message : 'Treasury or CA-specific world could not initialize. Check configuration and database availability; preserve both data volumes.');
+  console.error(startupDiagnostic(error, startupStage));
+  for (const issue of inspectConfiguration().issues) console.error(`[startup:configuration] ${issue}`);
   store.close();
   process.exit(1);
 }
