@@ -36,6 +36,7 @@ try {
     store.close();
     process.exit(1);
   }
+  if (provider.pausedMints?.length) console.warn(`[startup:treasury:INACTIVE_RECOVERY_PAUSED] ${provider.pausedMints.length} inactive coin profile(s) have unfinished operations under different treasury wallets. Records are preserved; recovery requires each profile's original CA and treasury key.`);
   startupStage = 'world';
   store.selectMint(process.env.MEMECOIN_MINT, provider.legacyMint);
   game = new Game({ store, colliders: Array.isArray(colliderData) ? colliderData : colliderData.colliders ?? [] });

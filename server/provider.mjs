@@ -297,6 +297,7 @@ export async function createProvider({ env = process.env, runtime = {}, onAuthor
   return {
     status: state,
     legacyMint: profile.legacyMint,
+    pausedMints: profile.pausedMints,
     async tick() {
       return await withLock(async client => {
         state.error = null;

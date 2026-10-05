@@ -179,6 +179,25 @@ test('PostgreSQL persists provider recovery, excludes another authority, and cre
     await provider.close(); provider = null;
     await query("INSERT INTO jobs(id,kind,status,data,created_at,updated_at) VALUES('unsettled','swap','submitted','{}',0,0)");
     await assert.rejects(openOther(), /CA switch blocked/);
+
+    // A separate wallet has no access to this profile's reserved funds. Allow
+    // its own new CA to start, preserving all old operations byte for byte.
+    const isolatedCoin = Keypair.generate().publicKey.toBase58();
+    const isolatedTreasury = Keypair.generate().publicKey.toBase58();
+    class SeparateWalletChain extends OfflineChain { address = isolatedTreasury; }
+    const snapshot = async () => Promise.all(['jobs', 'reservations', 'awards', 'prizes', 'ledger'].map(async table =>
+      (await query(`SELECT row_to_json(t) AS row FROM ${table} t ORDER BY row_to_json(t)::text`)).rows));
+    const beforeSwitch = await snapshot();
+    provider = await createProvider({ env: { ...env, MEMECOIN_MINT: isolatedCoin }, runtime: { Pool: IsolatedPool, Chain: SeparateWalletChain, Providers: OfflineProviders, now: () => clock } });
+    assert.deepEqual(provider.pausedMints, [coin]);
+    assert.equal(provider.legacyMint, coin);
+    assert.deepEqual(await snapshot(), beforeSwitch, 'different-wallet startup must not change old payment, recovery or prize records');
+    for (const table of ['jobs', 'reservations', 'awards', 'prizes', 'ledger']) {
+      const count = (await admin.query(`SELECT COUNT(*)::int AS count FROM "${schema}".lc_${coinKey(isolatedCoin)}_${table}`)).rows[0].count;
+      assert.equal(count, 0, 'a separate CA starts with an empty financial ledger and no inherited inventory');
+    }
+    await provider.close(); provider = null;
+    await assert.rejects(createProvider({ env: { ...env, MEMECOIN_MINT: isolatedCoin }, runtime: { Pool: IsolatedPool, Chain: OfflineChain, Providers: OfflineProviders } }), /different treasury wallet/);
     await query("UPDATE jobs SET status='confirmed' WHERE id='unsettled'");
     provider = await openOther();
     assert.equal(provider.legacyMint, coin);

@@ -27,20 +27,24 @@ export async function selectProviderProfile(pool, mint, wallet) {
   const profiles = (await pool.query('SELECT * FROM lootmon_coin_profiles')).rows;
   let selected = profiles.find(row => row.coin_mint === mint);
   if (selected && selected.treasury_wallet !== wallet) throw new CoinProfileError('This CA belongs to a different treasury wallet. Restore its original treasury key.');
+  const pausedMints = [];
   for (const profile of profiles.filter(row => row.coin_mint !== mint)) {
-    // Never orphan signed transactions, fee routing, or a promised transfer.
+    // Inactive profiles keep their signed transactions and promised transfers.
+    // A different treasury cannot sign for or spend their assets. A shared
+    // treasury must finish recovery before another CA can spend its balance.
     const pending = (await pool.query(profileSql(`SELECT
       EXISTS(SELECT 1 FROM cards_provider_reservations WHERE status NOT IN ('complete','refunded')) OR
       EXISTS(SELECT 1 FROM cards_provider_awards WHERE status <> 'confirmed') OR
       EXISTS(SELECT 1 FROM cards_provider_jobs WHERE kind <> 'recovery' AND status NOT IN ('complete','confirmed','refunded')) AS pending`, profile.table_prefix))).rows[0].pending;
-    if (pending) throw new CoinProfileError(`CA switch blocked: restore MEMECOIN_MINT=${profile.coin_mint} and finish its pending payment or award recovery first.`);
+    if (pending && profile.treasury_wallet === wallet) throw new CoinProfileError(`CA switch blocked: restore MEMECOIN_MINT=${profile.coin_mint} and finish its pending payment or award recovery first.`);
+    if (pending) pausedMints.push(profile.coin_mint);
   }
   if (!selected) {
     selected = { coin_mint: mint, treasury_wallet: wallet, table_prefix: profiles.length ? `lc_${coinKey(mint)}_` : 'cards_provider_' };
     // Registration happens after table initialization, so interruption can never
     // leave a registry entry pointing at missing financial tables.
   }
-  return { selected, legacyMint: profiles.find(row => row.table_prefix === 'cards_provider_')?.coin_mint ?? mint,
+  return { selected, pausedMints, legacyMint: profiles.find(row => row.table_prefix === 'cards_provider_')?.coin_mint ?? mint,
     async register() {
       await pool.query('INSERT INTO lootmon_coin_profiles VALUES($1,$2,$3) ON CONFLICT(coin_mint) DO NOTHING', [mint, wallet, selected.table_prefix]);
     },
