@@ -1,60 +1,52 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Keypair } from '@solana/web3.js';
-import { selectProviderProfile, coinKey } from '../server/coin-profiles.mjs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FileStore } from '../server/storage.mjs';
+import { coinKey, profileSql } from '../server/coin-profiles.mjs';
 
-const address = () => Keypair.generate().publicKey.toBase58();
+const A = 'So11111111111111111111111111111111111111112';
+const B = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const empty = () => ({ version: 1, packs: [], awards: [], accounts: {} });
 
-function database(profiles, pendingMints = []) {
-  const writes = [];
-  return {
-    writes,
-    async query(sql, args) {
-      if (sql.startsWith('CREATE TABLE IF NOT EXISTS lootmon_coin_profiles')) return { rows: [] };
-      if (sql.includes("to_regclass('cards_provider_identity')")) return { rows: [{ relation: null }] };
-      if (sql === 'SELECT * FROM lootmon_coin_profiles') return { rows: structuredClone(profiles) };
-      if (sql.includes(' AS pending')) {
-        const profile = profiles.find(row => sql.includes(`${row.table_prefix}reservations`));
-        assert.ok(profile, 'pending queries stay in a registered profile');
-        return { rows: [{ pending: pendingMints.includes(profile.coin_mint) }] };
-      }
-      if (sql.startsWith('INSERT INTO lootmon_coin_profiles')) { writes.push(args); return { rows: [] }; }
-      throw new Error(`Unexpected test query: ${sql}`);
-    },
-  };
-}
-
-test('a fresh CA and different wallet start with isolated tables while old recovery remains paused', async () => {
-  const old = { coin_mint: address(), treasury_wallet: address(), table_prefix: 'cards_provider_' };
-  const mint = address(), wallet = address();
-  const db = database([old], [old.coin_mint]);
-  const profile = await selectProviderProfile(db, mint, wallet);
-  assert.deepEqual(profile.pausedMints, [old.coin_mint]);
-  assert.equal(profile.legacyMint, old.coin_mint);
-  assert.deepEqual(profile.selected, { coin_mint: mint, treasury_wallet: wallet, table_prefix: `lc_${coinKey(mint)}_` });
-  assert.deepEqual(db.writes, [], 'startup must not rewrite old financial records or register before schema initialization');
-  await profile.register();
-  assert.deepEqual(db.writes, [[mint, wallet, profile.selected.table_prefix]]);
+test('CA-specific worlds restore exactly, with legacy inventory assigned only to its database identity', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lootmon-coins-'));
+  let store;
+  try {
+    store = new FileStore(dir);
+    const original = { ...empty(), packs: [{ id: 'real-prize' }], accounts: { alice: { score: 25 } } };
+    store.save(original);
+    store.selectMint(B, A);
+    assert.deepEqual(store.load(), empty(), 'new CA must not inherit any original prize or leaderboard');
+    store.save({ ...empty(), accounts: { bob: { score: 50 } } });
+    store.close();
+    store = new FileStore(dir);
+    store.selectMint(A, A);
+    assert.deepEqual(store.load(), original);
+    store.save(original);
+    store.close();
+    store = new FileStore(dir);
+    store.selectMint(B, A);
+    assert.equal(store.load().accounts.bob.score, 50);
+    assert.equal(store.load().accounts.alice, undefined);
+    assert.throws(() => new FileStore(dir), /Another game authority/);
+    const corrupt = { ...empty(), coinMint: A };
+    writeFileSync(store.path, JSON.stringify(corrupt));
+    assert.throws(() => store.load(), /different CA/);
+  } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('shared-wallet obligations still block even if a different-wallet profile also has pending recovery', async () => {
-  const wallet = address();
-  const profiles = [
-    { coin_mint: address(), treasury_wallet: address(), table_prefix: 'cards_provider_' },
-    { coin_mint: address(), treasury_wallet: wallet, table_prefix: `lc_${'a'.repeat(24)}_` },
-  ];
-  const db = database(profiles, profiles.map(p => p.coin_mint));
-  await assert.rejects(selectProviderProfile(db, address(), wallet), error => error.message.includes(`MEMECOIN_MINT=${profiles[1].coin_mint}`));
-  assert.deepEqual(db.writes, []);
-});
-
-test('returning to a registered CA retains its wallet binding and original tables', async () => {
-  const first = { coin_mint: address(), treasury_wallet: address(), table_prefix: 'cards_provider_' };
-  const second = { coin_mint: address(), treasury_wallet: address(), table_prefix: `lc_${'b'.repeat(24)}_` };
-  const db = database([first, second], [first.coin_mint, second.coin_mint]);
-  await assert.rejects(selectProviderProfile(db, first.coin_mint, second.treasury_wallet), /different treasury wallet/);
-  const profile = await selectProviderProfile(db, first.coin_mint, first.treasury_wallet);
-  assert.deepEqual(profile.selected, first);
-  assert.deepEqual(profile.pausedMints, [second.coin_mint], 'the active CA can resume its own pending recovery');
-  assert.deepEqual(db.writes, []);
+test('migration refuses to guess the CA of real legacy prizes; invalid mint cannot escape the data directory', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lootmon-coins-'));
+  const store = new FileStore(dir);
+  try {
+    store.save({ ...empty(), awards: [{ id: 'pending-award' }] });
+    const original = readFileSync(store.path, 'utf8');
+    assert.throws(() => store.selectMint(B), /original CA verified/);
+    assert.equal(readFileSync(store.path, 'utf8'), original);
+    assert.throws(() => store.selectMint('../../escape'), /valid MEMECOIN_MINT/);
+    assert.notEqual(coinKey(A), coinKey(B));
+    assert.throws(() => profileSql('SELECT 1', 'evil;'), /Invalid coin table/);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
